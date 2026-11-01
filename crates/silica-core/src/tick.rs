@@ -32,10 +32,11 @@ impl World {
     /// Current pass status (0.1):
     /// * `apply_inputs` — real: applies the queued strokes; `aux_init`
     ///   draws (D4, one per spawned cell) happen inside each stroke;
-    /// * `movement_pass` — real: powder + liquid, dispatched through the
-    ///   §6 pack registry's category table; liquids fall, swap by
-    ///   density, and disperse horizontally (draft D-012). Gases land in
-    ///   Commit 3 and stay a no-op branch until then;
+    /// * `movement_pass` — real: powder + liquid + gas, dispatched
+    ///   through the §6 pack registry's category table; liquids fall,
+    ///   swap by density, and disperse horizontally (draft D-012);
+    ///   gases rise and jitter horizontally (draft D-013, one D4 draw
+    ///   per jitting cell);
     /// * `reaction_pass`/`heat_pass` — no-op until reactions/heat;
     /// * `rigid_pass` — no-op until §7 islands (0.3);
     /// * `pressure_pass` — no-op until pressure v1 (0.3).
@@ -166,9 +167,8 @@ impl World {
         match self.pack.category_of(id) {
             Category::Powder => self.powder_step(x, y, id),
             Category::Liquid => self.liquid_step(x, y, id),
-            Category::None | Category::Solid | Category::Rigid => {}
-            // TODO(0.1): gas movement (Commit 3) and energy decay.
-            Category::Gas | Category::Energy => {}
+            Category::Gas => self.gas_step(x, y, id),
+            Category::None | Category::Solid | Category::Rigid | Category::Energy => {}
         }
     }
 
@@ -314,6 +314,57 @@ impl World {
         let _ = self.spawn(x1, y1, m0, t0, a0);
     }
 
+    /// Gas movement (Commit 3, draft D-013): rise when free; otherwise
+    /// horizontal jitter. Jitter is a documented D4 consumption point.
+    ///
+    /// * Rise: move up into an empty cell (no draw).
+    /// * Jitter: one `u32` draw per jitting cell; `word % 3` maps to
+    ///   0 = left, 1 = right, 2 = stay (draft D-013). The move only
+    ///   happens into an empty in-bounds cell; a blocked or out-of-bounds
+    ///   target leaves the gas in place (the draw is still consumed).
+    /// * Gases ignore density, never swap downward through liquids, and
+    ///   never move through non-empty cells; walls/edges block them.
+    fn gas_step(&mut self, x: u16, y: u16, id: u16) {
+        // 1. Rise when free.
+        if y > 0 {
+            let above = y - 1;
+            let above_idx = self.cell_index(x, above).expect("bounds checked");
+            if self.material[above_idx] == 0 {
+                self.move_gas(x, y, x, above, id);
+                return;
+            }
+        }
+        // 2. Horizontal jitter (D4 consumption point).
+        let word = self.rng.next_u32();
+        let choice = (word % 3) as i32;
+        let dx: i32 = match choice {
+            0 => -1,
+            1 => 1,
+            _ => 0,
+        };
+        if dx != 0 {
+            let nx = x as i32 + dx;
+            if nx >= 0 && nx < self.width as i32 {
+                let c = nx as u16;
+                let idx = self.cell_index(c, y).expect("bounds checked");
+                if self.material[idx] == 0 {
+                    self.move_gas(x, y, c, y, id);
+                }
+            }
+        }
+        // Stay in place (draw already consumed).
+    }
+
+    /// Moves one gas cell, preserving temperature and aux. Both cells
+    /// stamped.
+    fn move_gas(&mut self, x0: u16, y0: u16, x1: u16, y1: u16, id: u16) {
+        let src_idx = self.cell_index(x0, y0).expect("bounds checked");
+        let temp = self.temp[src_idx];
+        let aux = self.aux[src_idx];
+        let _ = self.spawn(x0, y0, 0, Temp::AMBIENT.0, 0);
+        let _ = self.spawn(x1, y1, id, temp, aux);
+    }
+
     /// Horizontal dispersion budget for liquids (schema v1 has no
     /// dispersion key, so this is an engine constant — draft D-012).
     const LIQUID_DISPERSION: u16 = 4;
@@ -380,14 +431,101 @@ mod tests {
     use crate::error::SilicaError;
     use crate::pack::{Category, Pack, test_packs};
     use crate::rng::Rng;
+    use crate::temp::Temp;
     use crate::world::{World, WorldConfig};
 
     /// Appendix B, id 1: sand — the shared starter test-pack keeps this
     /// id for sand (the dsl tests pin the real pack's ids identically).
     const SAND: u16 = 1;
-    /// Appendix B, id 2: water — the starter pack's only liquid, static
-    /// until liquid movement lands (ROADMAP.md 0.1).
+    /// Appendix B, id 2: water.
     const WATER: u16 = 2;
+    /// Gases rise when the cell above is empty, one cell per tick.
+    #[test]
+    fn gas_rises_straight_up_one_cell_per_tick() {
+        let mut smoke = test_packs::def(5, Category::Gas);
+        smoke.default_temp = Temp::from_kelvin(350);
+        let pack = Pack::new(
+            "t",
+            "1",
+            0,
+            vec![
+                test_packs::sand(),
+                test_packs::water(),
+                test_packs::fire(),
+                smoke,
+            ],
+        )
+        .unwrap();
+        let mut w = World::new(WorldConfig {
+            width: 8,
+            height: 8,
+            seed: 0,
+            walls: true,
+            pack: &pack,
+        });
+        // Smoke (gas) painted near the bottom; above is empty.
+        w.paint(&Brush::rect(3, 5, 3, 5, 5)).unwrap();
+        w.step(&[]).unwrap(); // placement tick
+        w.step(&[]).unwrap();
+        // It should have risen at least one row (single-update).
+        assert_eq!(w.cell(3, 4).unwrap().material, 5, "gas rose");
+    }
+
+    /// A jitting gas consumes exactly one D4 draw per cell per tick;
+    /// an empty world draws nothing.
+    #[test]
+    fn gas_jitter_consumes_one_draw_per_jitting_cell() {
+        let mut smoke = test_packs::def(5, Category::Gas);
+        smoke.default_temp = Temp::from_kelvin(350);
+        let mut stone = test_packs::def(12, Category::Rigid);
+        stone.crumble_into = Some(1);
+        let pack = Pack::new(
+            "t",
+            "1",
+            0,
+            vec![
+                test_packs::sand(),
+                test_packs::water(),
+                test_packs::fire(),
+                smoke,
+                stone,
+            ],
+        )
+        .unwrap();
+        let mut w = World::new(WorldConfig {
+            width: 8,
+            height: 8,
+            seed: 0,
+            walls: true,
+            pack: &pack,
+        });
+        // Smoke trapped under a barrier so it cannot rise.
+        w.paint(&Brush::rect(3, 2, 3, 2, 12)).unwrap(); // stone barrier
+        w.paint(&Brush::rect(3, 3, 3, 3, 5)).unwrap(); // smoke below
+        w.step(&[]).unwrap(); // placement tick (no draw, single-update)
+        w.step(&[]).unwrap(); // tick 1: gas jitters → one draw
+
+        // Mirror stream: exactly one draw for the one jitting cell.
+        let mut mirror = Rng::new(0);
+        mirror.next_u32();
+        assert_eq!(
+            w.rng_state(),
+            mirror.state(),
+            "one jitting gas consumes exactly one D4 draw"
+        );
+
+        // Empty world: no draws at all.
+        let mut empty = World::new(WorldConfig {
+            width: 8,
+            height: 8,
+            seed: 0,
+            walls: true,
+            pack: &pack,
+        });
+        let empty_before = empty.rng_state();
+        empty.step(&[]).unwrap();
+        assert_eq!(empty.rng_state(), empty_before, "empty world draws nothing");
+    }
 
     fn world(w: u16, h: u16) -> World {
         let pack = test_packs::starter();
