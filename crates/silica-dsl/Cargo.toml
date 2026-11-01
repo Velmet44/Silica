@@ -9,3 +9,14 @@ license.workspace = true
 # The registry types this crate compiles into are defined by silica-core,
 # which itself stays dependency-free (AGENTS.md rule 6).
 silica-core = { path = "../silica-core" }
+
+# Schema v1 (SPEC.md §6): material packs are files of data, not code —
+# reactions and transitions are data (pillar 4: hackability). This crate
+# is the parser/validator; floats are allowed here (only silica-core
+# denies them, §8 D1) for the load-time probability/temp conversions.
+toml = "1.1.8"
+serde = { version = "1", features = ["derive"] }
+
+# The load-error surface obeys the workspace convention: one error enum
+# per crate, built with thiserror.
+thiserror = "2"

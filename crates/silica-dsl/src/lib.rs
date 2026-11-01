@@ -1,17 +1,22 @@
 //! Silica DSL — material packs as data, compiled for the core.
 //!
-//! Loads the pack format of `SPEC.md` §6 (schema version 1: a `pack.toml`
-//! manifest plus one TOML file per material, `empty` implicit at id 0) and
-//! compiles it into the material registry types defined by `silica-core`.
-//! Reactions are data instead of code — hackability is pillar 4.
+//! Implements the schema v1 load surface of `SPEC.md` §6: a `pack.toml`
+//! manifest plus one TOML file per material (`empty` implicit at
+//! id 0), parsed with strict unknown-key rejection, validated against
+//! the loader notes finalized in D-009, and compiled into the [`Pack`]
+//! registry `silica-core` dispatches on. Reactions and transitions are
+//! data instead of code — hackability is pillar 4.
 //!
-//! Load validation rejects duplicate ids, unknown names in reactions or
-//! transitions, categories with illegal behavior (e.g. `solid` with melt)
-//! and ids above the registry cap (1024). Invalid input returns errors,
-//! never panics (`SPEC.md` §8 D10).
+//! The two compiles are [`load_pack`] (from a directory) and
+//! [`compile_pack`] (from in-memory `(name, bytes)` pairs, the
+//! WASM-friendly path). Every pack carries the byte-defined identity
+//! hash of §6/D11 in [`Pack::hash`]; failures surface as
+//! [`PackLoadError`] with the offending file named.
 //!
 //! No `unsafe` code is permitted in this crate (AGENTS.md rule 5).
-//!
-//! Scaffold only — the loader lands with milestone 0.1 (ROADMAP.md).
 
 #![forbid(unsafe_code)]
+
+mod loader;
+
+pub use loader::{PackLoadError, compile_pack, load_pack};

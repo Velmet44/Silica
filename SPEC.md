@@ -173,7 +173,13 @@ spread = "explosion"           # special kind: converts a radius, adds pressure
   transitions, categories with illegal behaviour (e.g. `solid` with melt),
   and ids above the registry cap (1024).
 - **Pack identity** = FNV-1a 64 over the sorted file list + file bytes. The
-  hash is recorded in world saves and replays (D11).
+  hash is recorded in world saves and replays (D11). Concretely (schema v1):
+  files sort by file-name bytes and include `pack.toml`; each file
+  contributes `u32 LE name length`, name bytes, `u32 LE content length`,
+  then its content bytes LF-normalized (CRLF pairs become LF), all
+  folded into one FNV-1a 64 (offset basis `0xcbf29ce484222325`, prime
+  `0x100000001b3`). The shipped starter pack identifies as
+  `0xc8ce7d9f920fd109`.
 
 **Loader notes (schema v1):**
 

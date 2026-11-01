@@ -1,0 +1,7 @@
+# Silica keeps these files LF on every platform: the pack identity hash
+# (SPEC.md §6/D11) and the golden manifest parser (tests/golden.rs)
+# both reject CRLF, and Rust sources must not gain CRs either.
+*.toml text eol=lf
+*.rs text eol=lf
+tests/golden/manifest.txt text eol=lf
+.gitattributes text eol=lf

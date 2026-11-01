@@ -9,10 +9,10 @@
 /// produce the all-zero state, xoshiro's one degenerate fixed point.
 ///
 /// Determinism (SPEC.md §8 D4): there is exactly one stream per world; it
-/// is drawn from only at the documented consumption points (reaction
-/// attempts, gas jitter, crumble jitter, `aux_init` at spawn) — none of
-/// which exist yet, all of which arrive with the §5/§6 passes. RNG state
-/// is part of world state: hashed, saved, replayed.
+/// it is drawn from only at the documented consumption points. The
+/// first live one is `aux_init` at spawn; reaction attempts, gas
+/// jitter, and crumble jitter join when their §5/§6 passes land. RNG
+/// state is part of world state: hashed, saved, replayed.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct Rng {
     s: [u32; 4],
@@ -38,7 +38,6 @@ impl Rng {
     }
 
     /// Draws the next 32 bits from the stream (xoshiro128\*\*).
-    #[allow(dead_code)] // consumed only at the §5/§6 documented points
     pub(crate) fn next_u32(&mut self) -> u32 {
         let result = self.s[1].wrapping_mul(5).rotate_left(7).wrapping_mul(9);
         let t = self.s[1] << 9;

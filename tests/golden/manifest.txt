@@ -9,6 +9,8 @@
 # print_manifest_hashes -- --ignored --nocapture` and provide the
 # written justification AGENTS.md rule 7 demands ("what changed, why,
 # which worlds affected").
+# Pack identity (SPEC.md §6/D11): silica-default v0.1.0 = 0xc8ce7d9f920fd109
+# (8 materials + pack.toml, LF-normalized framed FNV-1a 64).
 column_collapse	500	755803b8e3f562a3
 column_collapse	1000	4815d1c9d4997011
 column_collapse	1500	8afef15b3a42c40f

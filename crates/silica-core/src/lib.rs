@@ -31,13 +31,17 @@
 //! tick skeleton is in place: seven passes run in the documented order
 //! with `World::step`, the tick counter advances once per step, and the
 //! canonical state hash (FNV-1a 64 over the appendix-A buffer) is
-//! exposed. Brush strokes (`Brush`, `World::paint`) enter the world;
-//! powder movement (the starter pack's sand) is real; liquids, gases,
-//! reactions, heat, islands and pressure are documented no-op stages
-//! pending their milestones. Nothing draws from the RNG in a steady
-//! tick yet — the documented consumption points arrive with the pack
-//! registry (§6). The `pack` field of the §9 `WorldConfig` sketch
-//! joins with the §6 compiled registry.
+//! exposed — its layout, the sweep parity and the paint-skip rule were
+//! ratified as D-010. Brush strokes (`Brush`, `World::paint`) enter the
+//! world; powder movement is real, dispatched through the compiled pack
+//! registry (§6): `WorldConfig` takes `pack: &Pack`, ids validate
+//! against the registry at the paint boundary, and painting a cell
+//! **spawns** the material — its `default_temp` and a fresh aux word
+//! (one uniform D4 draw in `[lo, hi]` when the material declares
+//! `aux_init`; the first RNG consumption point, pre-first-golden per
+//! D-009). Liquids, gases, reactions, heat, islands and pressure are
+//! still no-op stages pending their milestones; the DSL loader that
+//! compiles packs lives in `silica-dsl`.
 
 #![deny(clippy::float_arithmetic)]
 #![forbid(unsafe_code)]
@@ -45,6 +49,7 @@
 mod brush;
 mod error;
 mod hash;
+mod pack;
 mod region;
 mod rng;
 mod temp;
@@ -53,5 +58,10 @@ mod world;
 
 pub use brush::Brush;
 pub use error::SilicaError;
+pub use hash::Fnv1a64;
+pub use pack::{
+    AuxRange, Category, MaterialDef, PROBABILITY_DENOMINATOR, Pack, PackProblem, Reaction, Spread,
+    Transition, Trigger,
+};
 pub use temp::Temp;
 pub use world::{CellView, World, WorldConfig};

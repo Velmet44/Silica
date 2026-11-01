@@ -1,22 +1,26 @@
-//! The world: SoA cell storage, regions, stamps, RNG, the tick surface
-//! (SPEC.md §3/§4/§9) and the canonical state hash (appendix A).
+//! The world: SoA cell storage, regions, stamps, RNG, the compiled
+//! pack registry, the tick surface (SPEC.md §3/§4/§6/§9) and the
+//! canonical state hash (appendix A).
 
 use crate::brush;
 use crate::brush::Brush;
 use crate::error::SilicaError;
 use crate::hash::Fnv1a64;
+use crate::pack::{AuxRange, Pack};
 use crate::region::RegionGrid;
 use crate::rng::Rng;
 use crate::temp::Temp;
 
 /// Configuration for [`World::new`] (SPEC.md §9).
 ///
-/// The `pack` field of the §9 sketch joins when the compiled registry
-/// type lands with the §6 loader (ROADMAP.md 0.1); until then material
-/// ids are stored unvalidated and the movement pass treats only the
-/// starter-pack sand (id 1) as a powder.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WorldConfig {
+/// `pack` is the compiled material registry (SPEC.md §6): the tick
+/// dispatches movement on its category table, and paint strokes are
+/// only accepted for ids it defines. The world owns a `Clone` of the
+/// pack, so one registry can be shared by many worlds (and its
+/// content-hash joins saves and replays, D11, once formats land —
+/// ROADMAP.md 0.3).
+#[derive(Clone, Copy, Debug)]
+pub struct WorldConfig<'pack> {
     /// Grid width in cells, 1..=u16::MAX.
     pub width: u16,
     /// Grid height in cells, 1..=u16::MAX.
@@ -24,24 +28,14 @@ pub struct WorldConfig {
     /// Seed for the single RNG stream (SPEC.md §8 D4).
     pub seed: u64,
     /// Whether the map edges behave as walls — anchors per SPEC.md §4.
-    /// The default value is an open question in SPEC.md §15, decided
-    /// before 0.2.
+    /// Not defaulted: hosts state it. Whether SPEC.md §15 should
+    /// eventually ratify `true` stays open until 0.2.
     /// Read only by [`World::is_anchor`], which the §7 rigid support
     /// analysis will call (ROADMAP.md 0.3).
     #[allow(dead_code)]
     pub walls: bool,
-}
-
-impl Default for WorldConfig {
-    /// The default world of SPEC.md §4: 512×384, seed 0, walls on.
-    fn default() -> Self {
-        WorldConfig {
-            width: 512,
-            height: 384,
-            seed: 0,
-            walls: true,
-        }
-    }
+    /// The compiled pack (SPEC.md §6).
+    pub pack: &'pack Pack,
 }
 
 /// A read-only snapshot of one cell (SPEC.md §9).
@@ -75,6 +69,10 @@ pub struct World {
     pub(crate) tick: u32,
     pub(crate) rng: Rng,
     pub(crate) regions: RegionGrid,
+    /// The world's compiled pack: the registry the movement dispatch
+    /// (and every other pass) consults, cloned from the config at
+    /// construction and never mutated afterwards (SPEC.md §4/§6).
+    pub(crate) pack: Pack,
     pub(crate) material: Vec<u16>,
     pub(crate) temp: Vec<i16>,
     pub(crate) aux: Vec<u16>,
@@ -94,7 +92,7 @@ impl World {
     /// Panics if `width` or `height` is 0 — a zero-sized world is a
     /// degenerate configuration, not valid input. Absurdly large
     /// configurations may instead abort on allocation failure.
-    pub fn new(config: WorldConfig) -> World {
+    pub fn new(config: WorldConfig<'_>) -> World {
         assert!(config.width != 0, "world width must be non-zero");
         assert!(config.height != 0, "world height must be non-zero");
         // u16 × u16 ≤ 65535², which fits u64 — and every supported usize.
@@ -106,6 +104,7 @@ impl World {
             tick: 0,
             rng: Rng::new(config.seed),
             regions: RegionGrid::new(config.width, config.height),
+            pack: config.pack.clone(),
             material: vec![0; cells],
             temp: vec![Temp::AMBIENT.0; cells],
             aux: vec![0; cells],
@@ -146,14 +145,26 @@ impl World {
         })
     }
 
-    /// Paints a brush at the current tick: covered cells take the brush
-    /// material (clamped to the world), are stamped, and wake their
-    /// regions; their temperature and aux stay as they were (v0 paint
-    /// semantics; aux spawning arrives with the §6 pack registry).
+    /// Paints a brush at the current tick.
+    ///
+    /// Every covered in-bounds cell is a **fresh spawn** of the brush
+    /// material: it takes the material's `default_temp` and a fresh
+    /// aux word — 0, or one uniform draw in the material's `[lo, hi]`
+    /// `aux_init` range from the D4 stream (SPEC.md §6 loader notes;
+    /// the spawn is why those constants live in the registry).
+    /// Painting `empty` (id 0) erases the covered cells to a fresh
+    /// empty cell: vacuum, ambient temperature, aux 0.
     ///
     /// Cells painted this tick do not move again this tick: the §5
-    /// single-update rule sees their fresh stamp.
-    pub fn paint(&mut self, brush: &Brush) {
+    /// single-update rule sees their fresh stamp (that placement behavior
+    /// was ratified as D-010's paint rule — paint and state hash are
+    /// independent of where `apply_inputs` sits in the pass order).
+    /// Covered cells are enumerated row-major ascending, which fixes
+    /// the aux draw order for the pack's RNG consumption contract.
+    ///
+    /// The brush material must be defined by the world's pack; an
+    /// unknown id is reported per D10 and nothing is written.
+    pub fn paint(&mut self, brush: &Brush) -> Result<(), SilicaError> {
         brush::paint(self, brush)
     }
 
@@ -163,11 +174,13 @@ impl World {
     /// — mirroring the save format's "for material, then temp, then
     /// aux". Streams the bytes directly; nothing is allocated (§5).
     ///
-    /// Layout note for review: appendix A's one-liner also admits a
-    /// per-cell interleaved reading (`(material, temp, aux)` triplets);
-    /// the two differ for any multi-cell world. This implementation
-    /// picks the three-streams reading and known-answer tests encode
-    /// exactly that — see `state_hash_matches_the_known_answer_…`.
+    /// Canonical layout note: appendix A hashes three separate
+    /// row-major streams — material, then temp, then aux — and *not* a
+    /// per-cell interleaved `(material, temp, aux)` buffer; both are
+    /// admissible readings of the appendix's one-liner. The choice was
+    /// ratified as D-010 (1) (the interleaved reading would hash this
+    /// 2×2 state to `0xe890_3a54_71cf_3701`; the known-answer tests
+    /// encode the three-streams value on both sides of the boundary).
     ///
     /// The buffer does not include stamps or region activity: they are
     /// derived bookkeeping recomputable from the painted history, not
@@ -195,8 +208,10 @@ impl World {
 
     /// Writes a cell's material id.
     ///
-    /// Ids are not registry-validated until the compiled pack lands
-    /// (§6). Stamps the cell and wakes its region.
+    /// Registry validation happens at the paint boundary
+    /// (`brush::paint`); the pass-facing primitives accept any id
+    /// because they only ever recycle ids already in the grid. Stamps
+    /// the cell and wakes its region.
     pub(crate) fn set_material(&mut self, x: u16, y: u16, id: u16) -> Result<(), SilicaError> {
         let idx = self
             .cell_index(x, y)
@@ -228,6 +243,48 @@ impl World {
         self.aux[idx] = aux;
         self.touch(idx, x, y);
         Ok(())
+    }
+
+    /// Spawns one cell of material `id`: material, temperature and aux
+    /// written together, stamped with the current tick, region woken —
+    /// exactly one audit write. The paint path (and later the §7
+    /// crumble and reaction spawns) go through here so every spawn has
+    /// identical bookkeeping.
+    pub(crate) fn spawn(
+        &mut self,
+        x: u16,
+        y: u16,
+        id: u16,
+        temp: i16,
+        aux: u16,
+    ) -> Result<(), SilicaError> {
+        let idx = self
+            .cell_index(x, y)
+            .ok_or(SilicaError::OutOfBounds { x, y })?;
+        self.material[idx] = id;
+        self.temp[idx] = temp;
+        self.aux[idx] = aux;
+        self.touch(idx, x, y);
+        Ok(())
+    }
+
+    /// One uniform aux draw in the range's span from the single
+    /// stream (SPEC.md §6 loader notes, D4 consumption point): the
+    /// canonical mapping is `lo + word % span`, where `word` is one
+    /// full xoshiro128** output — bias below 2^-15 for every
+    /// u16-scale range and pinned against a mirror stream by the
+    /// brush tests. Paint enumerates its covered cells row-major, so
+    /// the cover order fixes the draw order.
+    ///
+    /// Always consumes exactly one draw per spawned cell of a
+    /// material with `aux_init` — even a range with `lo == hi` draws
+    /// (the schedule depends on the pack shape, never on values).
+    pub(crate) fn draw_aux(&mut self, range: AuxRange) -> u16 {
+        let word = self.rng.next_u32();
+        let offset = word % range.span();
+        // lo + offset ≤ hi ≤ 65535 — the sum fits u16 trivially
+        // (documented non-capable, §8 D2).
+        (u32::from(range.lo) + offset) as u16
     }
 
     /// The tick this cell was last written; `u32::MAX` means never.
@@ -278,25 +335,31 @@ mod tests {
     use super::{World, WorldConfig};
     use crate::brush::Brush;
     use crate::error::SilicaError;
+    use crate::pack::{Pack, test_packs};
     use crate::rng::Rng;
     use crate::temp::Temp;
 
-    fn cfg(width: u16, height: u16, seed: u64) -> WorldConfig {
+    /// Appendix B, id 1: sand — the shared starter test-pack keeps this
+    /// id for sand (the dsl tests pin the real pack's ids identically).
+    const SAND_TEST_ID: u16 = 1;
+
+    /// Test config: walls on, the shared starter pack (borrowed).
+    /// Ids painted against it are checked at the paint boundary, so
+    /// tests only paint ids the starter defines (or none at all).
+    fn cfg(width: u16, height: u16, seed: u64, pack: &Pack) -> WorldConfig<'_> {
         WorldConfig {
             width,
             height,
             seed,
             walls: true,
+            pack,
         }
     }
 
-    /// Appendix B, id 1: sand (starter-pack value, used before the §6
-    /// registry replaces the hard-coded category knowledge).
-    const SAND_TEST_ID: u16 = 1;
-
     #[test]
     fn new_initializes_every_cell_empty_at_ambient() {
-        let world = World::new(cfg(512, 384, 42));
+        let pack = test_packs::starter();
+        let world = World::new(cfg(512, 384, 42, &pack));
         let cells = 512 * 384usize;
         assert_eq!(world.material.len(), cells);
         assert_eq!(world.temp.len(), cells);
@@ -313,30 +376,33 @@ mod tests {
         }
     }
 
+    /// `WorldConfig` carries no `Default` — hosts state every field,
+    /// the pack included. The world holds its own `Clone` of it.
     #[test]
-    fn default_config_is_the_spec_world() {
-        let config = WorldConfig::default();
-        assert_eq!(config.width, 512);
-        assert_eq!(config.height, 384);
-        assert!(config.walls);
-        let world = World::new(config);
+    fn config_carries_the_pack_and_the_world_clones_it() {
+        let pack = test_packs::starter();
+        let world = World::new(cfg(512, 384, 42, &pack));
         assert_eq!(world.width(), 512);
         assert_eq!(world.height(), 384);
         assert!(world.cell(511, 383).is_some());
+        assert_eq!(world.pack.name(), "test-starter");
+        assert_eq!(world.pack.len(), 3);
     }
 
     #[test]
     fn tick_starts_at_zero_and_seed_seeds_the_rng() {
-        let world = World::new(cfg(64, 48, 42));
+        let pack = test_packs::starter();
+        let world = World::new(cfg(64, 48, 42, &pack));
         assert_eq!(world.tick(), 0);
         assert_eq!(world.rng_state(), Rng::new(42).state());
-        let other = World::new(cfg(64, 48, 43));
+        let other = World::new(cfg(64, 48, 43, &pack));
         assert_ne!(world.rng_state(), other.rng_state());
     }
 
     #[test]
     fn reads_outside_the_grid_are_none() {
-        let world = World::new(cfg(64, 48, 42));
+        let pack = test_packs::starter();
+        let world = World::new(cfg(64, 48, 42, &pack));
         assert!(world.cell(64, 0).is_none());
         assert!(world.cell(0, 48).is_none());
         assert!(world.cell(64, 48).is_none());
@@ -345,7 +411,8 @@ mod tests {
 
     #[test]
     fn writes_outside_the_grid_return_errors() {
-        let mut world = World::new(cfg(64, 48, 42));
+        let pack = test_packs::starter();
+        let mut world = World::new(cfg(64, 48, 42, &pack));
         assert_eq!(
             world.set_material(64, 0, 1),
             Err(SilicaError::OutOfBounds { x: 64, y: 0 })
@@ -362,7 +429,8 @@ mod tests {
 
     #[test]
     fn setters_store_values_and_preserve_neighbours() {
-        let mut world = World::new(cfg(64, 48, 42));
+        let pack = test_packs::starter();
+        let mut world = World::new(cfg(64, 48, 42, &pack));
         world.set_material(5, 5, 7).unwrap();
         world.set_temp(5, 5, 2800).unwrap();
         world.set_aux(5, 5, 444).unwrap();
@@ -388,7 +456,8 @@ mod tests {
 
     #[test]
     fn set_temp_clamps_on_store() {
-        let mut world = World::new(cfg(64, 48, 42));
+        let pack = test_packs::starter();
+        let mut world = World::new(cfg(64, 48, 42, &pack));
         world.set_temp(1, 1, 999_999).unwrap();
         assert_eq!(world.cell(1, 1).unwrap().temp, Temp::MAX);
         world.set_temp(2, 2, -100).unwrap();
@@ -399,7 +468,8 @@ mod tests {
 
     #[test]
     fn writes_stamp_the_current_tick() {
-        let mut world = World::new(cfg(64, 48, 42));
+        let pack = test_packs::starter();
+        let mut world = World::new(cfg(64, 48, 42, &pack));
         assert_eq!(world.tick(), 0);
         world.set_material(10, 10, 3).unwrap();
         assert_eq!(world.stamp_of(10, 10), Some(0)); // written this tick
@@ -420,7 +490,8 @@ mod tests {
 
     #[test]
     fn writes_wake_exactly_their_regions() {
-        let mut world = World::new(cfg(512, 384, 0));
+        let pack = test_packs::starter();
+        let mut world = World::new(cfg(512, 384, 0, &pack));
         assert_eq!(world.regions.active_regions().count(), 0);
 
         world.set_material(100, 100, 1).unwrap(); // region (3, 3)
@@ -433,7 +504,8 @@ mod tests {
 
     #[test]
     fn a_write_wakes_only_its_own_region() {
-        let mut world = World::new(cfg(512, 384, 0));
+        let pack = test_packs::starter();
+        let mut world = World::new(cfg(512, 384, 0, &pack));
         world.set_material(100, 100, 1).unwrap(); // region (3, 3)
         for ry in 0..12u16 {
             for rx in 0..16u16 {
@@ -449,11 +521,13 @@ mod tests {
 
     #[test]
     fn partial_edge_tiles_in_a_non_multiple_world() {
+        let pack = test_packs::starter();
         let mut world = World::new(WorldConfig {
             width: 100,
             height: 70,
             seed: 1,
             walls: true,
+            pack: &pack,
         });
         world.set_material(99, 69, 5).unwrap();
         assert!(world.regions.is_active(3, 2));
@@ -463,7 +537,8 @@ mod tests {
 
     #[test]
     fn anchors_cover_bottom_row_and_walled_edges() {
-        let walled = World::new(cfg(64, 48, 0));
+        let pack = test_packs::starter();
+        let walled = World::new(cfg(64, 48, 0, &pack));
         assert!(walled.is_anchor(0, 0)); // top-left corner: walled edge
         assert!(walled.is_anchor(63, 0)); // top edge
         assert!(walled.is_anchor(0, 24)); // left edge
@@ -477,6 +552,7 @@ mod tests {
             height: 48,
             seed: 0,
             walls: false,
+            pack: &pack,
         });
         assert!(open.is_anchor(32, 47)); // bottom row is ground even without walls
         assert!(!open.is_anchor(0, 24));
@@ -487,22 +563,26 @@ mod tests {
     #[test]
     #[should_panic(expected = "world width must be non-zero")]
     fn zero_width_is_a_documented_programmer_error() {
+        let pack = test_packs::starter();
         let _ = World::new(WorldConfig {
             width: 0,
             height: 48,
             seed: 0,
             walls: true,
+            pack: &pack,
         });
     }
 
     #[test]
     #[should_panic(expected = "world height must be non-zero")]
     fn zero_height_is_a_documented_programmer_error() {
+        let pack = test_packs::starter();
         let _ = World::new(WorldConfig {
             width: 48,
             height: 0,
             seed: 0,
             walls: true,
+            pack: &pack,
         });
     }
 
@@ -513,7 +593,8 @@ mod tests {
     /// re-implementation before being locked here.
     #[test]
     fn state_hash_matches_the_known_answer_1_by_1_seed_42() {
-        let world = World::new(cfg(1, 1, 42));
+        let pack = test_packs::starter();
+        let world = World::new(cfg(1, 1, 42, &pack));
         assert_eq!(world.state_hash(), 0xfe8c_3b38_de4d_130c);
     }
 
@@ -521,7 +602,8 @@ mod tests {
     /// participation in the hash.
     #[test]
     fn state_hash_matches_the_known_answer_1_by_1_seed_0() {
-        let world = World::new(cfg(1, 1, 0));
+        let pack = test_packs::starter();
+        let world = World::new(cfg(1, 1, 0, &pack));
         assert_eq!(world.state_hash(), 0xc59f_662a_8cb1_3780);
     }
 
@@ -529,12 +611,13 @@ mod tests {
     /// sand at (0,0), 400 K at (1,0), aux 7 at (0,1), rest empty at
     /// ambient. This pins the three-streams reading of appendix A —
     /// a per-cell interleaved buffer would hash this state to
-    /// `0xe890_3a54_71cf_3701` instead (computed alongside, reported
-    /// in the PR for review).
+    /// `0xe890_3a54_71cf_3701` instead; the reading was ratified as
+    /// D-010 (1), including that alternate value.
     #[test]
     fn state_hash_matches_the_known_answer_2_by_2_tick_9() {
-        let mut world = World::new(cfg(2, 2, 42));
-        world.paint(&Brush::rect(0, 0, 0, 0, SAND_TEST_ID));
+        let pack = test_packs::starter();
+        let mut world = World::new(cfg(2, 2, 42, &pack));
+        world.paint(&Brush::rect(0, 0, 0, 0, SAND_TEST_ID)).unwrap();
         world.set_temp(1, 0, 1600).unwrap(); // 400 K
         world.set_aux(0, 1, 7).unwrap();
         world.tick = 9;
@@ -545,8 +628,9 @@ mod tests {
     /// participation byte for byte.
     #[test]
     fn state_hash_matches_the_known_answer_2_by_2_tick_8() {
-        let mut world = World::new(cfg(2, 2, 42));
-        world.paint(&Brush::rect(0, 0, 0, 0, SAND_TEST_ID));
+        let pack = test_packs::starter();
+        let mut world = World::new(cfg(2, 2, 42, &pack));
+        world.paint(&Brush::rect(0, 0, 0, 0, SAND_TEST_ID)).unwrap();
         world.set_temp(1, 0, 1600).unwrap();
         world.set_aux(0, 1, 7).unwrap();
         world.tick = 8;
@@ -558,30 +642,31 @@ mod tests {
     /// an otherwise-identical twin world.
     #[test]
     fn state_hash_distinguishes_every_state_field() {
-        let baseline = World::new(cfg(8, 8, 7));
+        let pack = test_packs::starter();
+        let baseline = World::new(cfg(8, 8, 7, &pack));
         let hash_of = |w: &World| w.state_hash();
 
         // rng_state via the seed.
-        let w = World::new(cfg(8, 8, 8));
+        let w = World::new(cfg(8, 8, 8, &pack));
         assert_ne!(hash_of(&w), hash_of(&baseline));
 
         // tick: identical worlds, one stepped.
-        let mut w = World::new(cfg(8, 8, 7));
+        let mut w = World::new(cfg(8, 8, 7, &pack));
         w.step(&[]).unwrap();
         assert_ne!(hash_of(&w), hash_of(&baseline));
 
         // material.
-        let mut w = World::new(cfg(8, 8, 7));
-        w.paint(&Brush::rect(4, 4, 4, 4, SAND_TEST_ID));
+        let mut w = World::new(cfg(8, 8, 7, &pack));
+        w.paint(&Brush::rect(4, 4, 4, 4, SAND_TEST_ID)).unwrap();
         assert_ne!(hash_of(&w), hash_of(&baseline));
 
         // temp.
-        let mut w = World::new(cfg(8, 8, 7));
+        let mut w = World::new(cfg(8, 8, 7, &pack));
         w.set_temp(4, 4, 1600).unwrap();
         assert_ne!(hash_of(&w), hash_of(&baseline));
 
         // aux.
-        let mut w = World::new(cfg(8, 8, 7));
+        let mut w = World::new(cfg(8, 8, 7, &pack));
         w.set_aux(4, 4, 3).unwrap();
         assert_ne!(hash_of(&w), hash_of(&baseline));
     }
@@ -592,13 +677,15 @@ mod tests {
     /// second step.
     #[test]
     fn state_hash_advances_when_a_cell_moves() {
+        let pack = test_packs::starter();
         let mut world = World::new(WorldConfig {
             width: 16,
             height: 16,
             seed: 0,
             walls: true,
+            pack: &pack,
         });
-        world.paint(&Brush::rect(3, 3, 3, 3, SAND_TEST_ID));
+        world.paint(&Brush::rect(3, 3, 3, 3, SAND_TEST_ID)).unwrap();
         let before = world.state_hash();
         world.step(&[]).unwrap(); // placement tick: no movement
         assert_eq!(world.cell(3, 3).unwrap().material, SAND_TEST_ID);

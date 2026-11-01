@@ -8,12 +8,17 @@
 /// [`World::state_hash`](crate::world::World::state_hash) can stream the
 /// whole world through it (`SPEC.md` §5, zero-allocation tick).
 ///
+/// Public because the canonical hashes of sibling crates must reuse the
+/// same primitive (the DSL's D11 pack hash, the formats crate's save
+/// encoding) — one FNV-1a 64 implementation in the engine, nowhere
+/// else.
+///
 /// The primitive is pinned unit-test-first against the published FNV
 /// test vectors (draft-eastlake-fnv's `test_fnv.c` harness): FNV over
 /// the draft's four test strings plus their `"\0"`-terminated block
 /// variants. Any deviation would shift every golden hash, so this is
 /// test-first material, not an implementation detail.
-pub(crate) struct Fnv1a64 {
+pub struct Fnv1a64 {
     state: u64,
 }
 
@@ -25,7 +30,7 @@ impl Fnv1a64 {
     const PRIME: u64 = 0x100000001b3;
 
     /// Starts a hash at the FNV-1a 64 offset basis.
-    pub(crate) fn new() -> Fnv1a64 {
+    pub fn new() -> Fnv1a64 {
         Fnv1a64 {
             state: Self::OFFSET_BASIS,
         }
@@ -36,7 +41,7 @@ impl Fnv1a64 {
     /// Determinism: XOR-then-multiply per byte, exactly as FNV-1a; the
     /// multiply uses `wrapping_mul` because it can overflow (§8 D2) —
     /// the mod-2^64 reduction *is* the specification.
-    pub(crate) fn update(&mut self, bytes: &[u8]) {
+    pub fn update(&mut self, bytes: &[u8]) {
         for &byte in bytes {
             self.state ^= u64::from(byte);
             self.state = self.state.wrapping_mul(Self::PRIME);
@@ -44,8 +49,14 @@ impl Fnv1a64 {
     }
 
     /// Finalizes and returns the 64-bit hash.
-    pub(crate) fn finish(self) -> u64 {
+    pub fn finish(self) -> u64 {
         self.state
+    }
+}
+
+impl Default for Fnv1a64 {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
