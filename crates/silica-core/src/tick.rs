@@ -4,6 +4,7 @@ use crate::brush::{self, Brush};
 use crate::error::SilicaError;
 use crate::pack::Category;
 use crate::region::REGION_SIZE;
+use crate::temp::Temp;
 use crate::world::World;
 
 impl World {
@@ -31,9 +32,10 @@ impl World {
     /// Current pass status (0.1):
     /// * `apply_inputs` — real: applies the queued strokes; `aux_init`
     ///   draws (D4, one per spawned cell) happen inside each stroke;
-    /// * `movement_pass` — real but powder-only, dispatched through the
-    ///   §6 pack registry's category table; liquids/gases land next in
-    ///   ROADMAP.md 0.1 and stay no-op branches until then;
+    /// * `movement_pass` — real: powder + liquid, dispatched through the
+    ///   §6 pack registry's category table; liquids fall, swap by
+    ///   density, and disperse horizontally (draft D-012). Gases land in
+    ///   Commit 3 and stay a no-op branch until then;
     /// * `reaction_pass`/`heat_pass` — no-op until reactions/heat;
     /// * `rigid_pass` — no-op until §7 islands (0.3);
     /// * `pressure_pass` — no-op until pressure v1 (0.3).
@@ -163,10 +165,10 @@ impl World {
         }
         match self.pack.category_of(id) {
             Category::Powder => self.powder_step(x, y, id),
+            Category::Liquid => self.liquid_step(x, y, id),
             Category::None | Category::Solid | Category::Rigid => {}
-            // TODO(0.1): liquid and gas movement branches with their
-            // §5/§6 behavior (energy moves with its aux pass).
-            Category::Liquid | Category::Gas | Category::Energy => {}
+            // TODO(0.1): gas movement (Commit 3) and energy decay.
+            Category::Gas | Category::Energy => {}
         }
     }
 
@@ -206,6 +208,115 @@ impl World {
         }
         // Neither diagonal free: the grain stays put this tick.
     }
+
+    /// Liquid movement (Commit 2, draft D-012): fall → diagonal →
+    /// horizontal dispersion, all gated on the single-update stamp.
+    ///
+    /// * Straight down: move into an empty cell, or **swap** with a
+    ///   lighter liquid (density ordering — heavier sinks). Draft D-012:
+    ///   swaps happen straight-down only; diagonal and horizontal moves
+    ///   go into empty cells only.
+    /// * Diagonal: parity-preferred side first (D-010 (2) trial order),
+    ///   into empty cells only.
+    /// * Horizontal dispersion: scan up to `LIQUID_DISPERSION` cells in
+    ///   the parity direction, moving into the first empty one; stop at
+    ///   the first non-empty cell (no passing through). Draft D-012: the
+    ///   cap (4) is an engine constant for schema v1 — there is no
+    ///   dispersion key in the DSL.
+    ///
+    /// Liquids never move into/through non-empty cells except the
+    /// straight-down density swap; swaps stamp both cells.
+    fn liquid_step(&mut self, x: u16, y: u16, id: u16) {
+        let density = self.pack.get(id).map(|def| def.density).unwrap_or(0);
+        let below = y.saturating_add(1);
+
+        // 1. Straight down (move or density swap).
+        if below < self.height {
+            let below_idx = self.cell_index(x, below).expect("bounds checked");
+            let below_id = self.material[below_idx];
+            if below_id == 0 {
+                self.move_liquid(x, y, x, below, id);
+                return;
+            }
+            if self.pack.category_of(below_id) == Category::Liquid {
+                let below_density = self.pack.get(below_id).map(|def| def.density).unwrap_or(0);
+                if density > below_density {
+                    // Heavier-over-lighter swap (draft D-012: straight-down only).
+                    self.swap_liquid(x, y, x, below);
+                    return;
+                }
+            }
+        }
+
+        // 2. Diagonal (parity-preferred side first, D-010 (2)).
+        if below < self.height {
+            let left: Option<u16> = if x == 0 { None } else { Some(x - 1) };
+            let right: Option<u16> = if x + 1 >= self.width {
+                None
+            } else {
+                Some(x + 1)
+            };
+            let candidates: [Option<u16>; 2] = if self.tick.is_multiple_of(2) {
+                [left, right]
+            } else {
+                [right, left]
+            };
+            for cx in candidates.into_iter().flatten() {
+                let idx = self.cell_index(cx, below).expect("bounds checked");
+                if self.material[idx] == 0 {
+                    self.move_liquid(x, y, cx, below, id);
+                    return;
+                }
+            }
+        }
+
+        // 3. Horizontal dispersion (parity direction, bounded).
+        let dir: i32 = if self.tick.is_multiple_of(2) { 1 } else { -1 };
+        let mut cx = x as i32;
+        let mut target: Option<u16> = None;
+        for _ in 0..Self::LIQUID_DISPERSION {
+            cx += dir;
+            if cx < 0 || cx >= self.width as i32 {
+                break;
+            }
+            let c = cx as u16;
+            let idx = self.cell_index(c, y).expect("bounds checked");
+            if self.material[idx] == 0 {
+                target = Some(c);
+            } else {
+                // Blocked by a non-empty cell: stop scanning.
+                break;
+            }
+        }
+        if let Some(c) = target {
+            self.move_liquid(x, y, c, y, id);
+        }
+    }
+
+    /// Moves one liquid cell, preserving its temperature and aux
+    /// (a move, not a spawn from defaults). Both cells are stamped.
+    fn move_liquid(&mut self, x0: u16, y0: u16, x1: u16, y1: u16, id: u16) {
+        let src_idx = self.cell_index(x0, y0).expect("bounds checked");
+        let temp = self.temp[src_idx];
+        let aux = self.aux[src_idx];
+        let _ = self.spawn(x0, y0, 0, Temp::AMBIENT.0, 0);
+        let _ = self.spawn(x1, y1, id, temp, aux);
+    }
+
+    /// Swaps two liquid cells (density ordering): full state exchange,
+    /// both cells stamped.
+    fn swap_liquid(&mut self, x0: u16, y0: u16, x1: u16, y1: u16) {
+        let i0 = self.cell_index(x0, y0).expect("bounds checked");
+        let i1 = self.cell_index(x1, y1).expect("bounds checked");
+        let (m0, t0, a0) = (self.material[i0], self.temp[i0], self.aux[i0]);
+        let (m1, t1, a1) = (self.material[i1], self.temp[i1], self.aux[i1]);
+        let _ = self.spawn(x0, y0, m1, t1, a1);
+        let _ = self.spawn(x1, y1, m0, t0, a0);
+    }
+
+    /// Horizontal dispersion budget for liquids (schema v1 has no
+    /// dispersion key, so this is an engine constant — draft D-012).
+    const LIQUID_DISPERSION: u16 = 4;
 
     /// A destination cell is free when its material is empty.
     /// Out-of-bounds coordinates are never free (the world edge and
@@ -522,18 +633,54 @@ mod tests {
         assert_eq!(w.cell(3, 2).unwrap().material, 0);
     }
 
-    /// Liquids (and gases) are compiled into the registry but remain
-    /// static until their §5 movement branches land — the starter
-    /// world's water does not teleport sand-style.
+    /// Liquids fall straight down when the cell below is empty, one
+    /// cell per tick (single-update rule), like powders.
     #[test]
-    fn liquids_stay_static_until_their_movement_lands() {
+    fn liquid_falls_straight_down_one_cell_per_tick() {
         let mut w = world(8, 8);
-        w.paint(&Brush::rect(3, 3, 3, 3, WATER)).unwrap();
-        for _ in 0..3 {
-            w.step(&[]).unwrap();
-        }
+        w.paint(&Brush::rect(3, 2, 3, 2, WATER)).unwrap();
+        w.step(&[]).unwrap(); // placement tick: no movement
+        assert_eq!(w.cell(3, 2).unwrap().material, WATER);
+        w.step(&[]).unwrap();
         assert_eq!(w.cell(3, 3).unwrap().material, WATER);
-        assert_eq!(w.cell(3, 4).unwrap().material, 0);
+        assert_eq!(w.cell(3, 2).unwrap().material, 0);
+    }
+
+    /// Oil (density 850) floats on water (density 1000): a water cell
+    /// directly above an oil cell that is blocked from falling swaps
+    /// downward, so the heavier liquid ends up below (draft D-012).
+    #[test]
+    fn oil_floats_on_water() {
+        let mut oil = test_packs::def(3, Category::Liquid);
+        oil.density = 850;
+        let pack = Pack::new(
+            "t",
+            "1",
+            0,
+            vec![
+                test_packs::sand(),
+                test_packs::water(),
+                oil,
+                test_packs::fire(),
+            ],
+        )
+        .unwrap();
+        let mut w = World::new(WorldConfig {
+            width: 1,
+            height: 8,
+            seed: 0,
+            walls: true,
+            pack: &pack,
+        });
+        // Oil rests on the bottom row; water sits directly above it.
+        // Width 1 keeps oil from dispersing sideways, so the density
+        // swap is observable in isolation.
+        w.paint(&Brush::rect(0, 7, 0, 7, 3)).unwrap();
+        w.paint(&Brush::rect(0, 6, 0, 6, 2)).unwrap();
+        w.step(&[]).unwrap(); // placement tick
+        w.step(&[]).unwrap(); // water (heavier) swaps below the oil
+        assert_eq!(w.cell(0, 7).unwrap().material, 2, "water sank");
+        assert_eq!(w.cell(0, 6).unwrap().material, 3, "oil floated up");
     }
 
     /// A queued stroke naming an id outside the pack is rejected whole
