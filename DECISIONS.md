@@ -14,6 +14,7 @@ Changing an accepted decision requires a new entry — never a silent edit.
 | D-007 | 2026-10-31 | **Project name: Silica**; published crate and npm package: **`silica-sim`** | Accepted |
 | D-008 | 2026-10-31 | **Spec kit: full package** — this directory — before any code | Accepted |
 | D-009 | 2026-10-31 | **DSL loader notes finalized** (SPEC §6): one file per material; transition keys `at_temp`/`below_temp`/`aux_exhausted`; optional `other_becomes`, `probability`, `spread`, `aux_init`, `crumble_into`; starter pack ships 8 materials + steam | Accepted |
+| D-010 | 2026-11-01 | **Ratified: canonical hash layout, sweep parity, paint rule** — the first golden manifest is permanent | Accepted |
 
 ## Rationale
 
@@ -75,6 +76,29 @@ because water's `douse` targets steam and load validation rejects unknown
 names — the alternative (douse → empty) visibly worsens the 0.1 demo GIF.
 Pre-golden, so no hashes are affected; D4's consumption points gain the
 `aux_init` spawn draw, still pre-first-golden.
+
+**D-010 Hash layout, sweep parity, paint rule.** Ratifying the three
+interpretation choices flagged during the first golden (986ff17), so its
+manifest columns stop being provisional:
+(1) the canonical state-hash buffer (`SPEC.md` appendix A) is **three
+separate row-major streams — material, then temp, then aux** — not
+per-cell interleaved; it mirrors appendix A's own save-format wording
+and the crate's SoA cell storage. The 2×2 known answer stays pinned at
+`0xd59b7dfd_ddde_a099` (the interleaved reading of the same state
+hashes `0xe8903a5471cf3701`).
+(2) Sweep parity as implemented — **even ticks scan columns ascending
+and try the down-left diagonal first; odd ticks scan descending and
+prefer down-right, falling back to the other side** — symmetric over
+any two consecutive ticks, removes pile-direction bias, and is pinned
+by tests (preference, fallback, and both world edges).
+(3) Painted cells **skip their placement tick** (the §5 stamp rule):
+paint + hash become independent of where `apply_inputs` sits in the
+pass order.
+Note (rides along): `column_collapse` constants are accepted detail —
+seed 0, 64×48, walled, pile never reaches the side walls.
+Consequence: the 20 lines of `tests/golden/manifest.txt` and the 2×2
+anchor are permanent; changing either requires a new entry here plus
+the AGENTS rule-7 written justification.
 
 ## Still open
 
