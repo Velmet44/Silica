@@ -1,0 +1,12 @@
+# Starter pack, milestone 0.1. The melt → molten_glass transition
+# (SPEC appendix B, id 15) is added with the full 30-material pack in 0.3 —
+# load validation rejects references to materials that are not in the pack.
+schema_version = 1
+
+[material.sand]
+id = 1
+name = "Sand"
+category = "powder"
+density = 1600                  # relative ordering only (SPEC §2)
+default_temp = 295
+colors = ["#d9c07a", "#cfb56f", "#e2cc8b"]

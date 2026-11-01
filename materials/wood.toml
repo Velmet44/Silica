@@ -1,0 +1,18 @@
+schema_version = 1
+
+[material.wood]
+id = 7
+name = "Wood"
+category = "rigid"
+density = 600
+default_temp = 295
+colors = ["#8a5a2b", "#7a4e24", "#96662f"]
+# No crumble_into: soft impact welds the island back (SPEC §7.4).
+
+# Catches fire from a neighboring fire cell; slow burn (probability well
+# below 1.0 spreads the burn over many ticks).
+[[material.wood.reaction]]
+name = "ignite"
+other = "fire"
+self_becomes = "fire"
+probability = 0.05

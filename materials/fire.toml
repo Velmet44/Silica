@@ -1,0 +1,16 @@
+schema_version = 1
+
+[material.fire]
+id = 4
+name = "Fire"
+category = "energy"
+density = 1
+default_temp = 1200
+colors = ["#ff9d2f", "#ff6a00", "#ffd166"]
+# aux is the category default = fire life in ticks (SPEC §4); the draw happens
+# once per spawned cell in apply_inputs from the main RNG stream (D4).
+aux_init = [30, 90]
+
+# Burnt-out fire becomes smoke (appendix B: fire "decays → smoke").
+[material.fire.transition]
+burn_out = { aux_exhausted = true, to = "smoke" }

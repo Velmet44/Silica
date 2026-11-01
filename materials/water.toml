@@ -1,0 +1,17 @@
+schema_version = 1
+
+[material.water]
+id = 2
+name = "Water"
+category = "liquid"
+density = 1000
+default_temp = 295
+colors = ["#3d6dd8", "#3562c6"]
+# Freeze @ 273 K → ice arrives with the full pack in 0.3.
+
+[[material.water.reaction]]
+name = "douse"
+other = "fire"
+self_becomes = "steam"
+other_becomes = "empty"
+probability = 1.0

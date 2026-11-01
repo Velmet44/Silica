@@ -1,0 +1,16 @@
+schema_version = 1
+
+[material.oil]
+id = 3
+name = "Oil"
+category = "liquid"
+density = 850                   # < water → floats (SPEC appendix B)
+default_temp = 295
+colors = ["#4a3b2a", "#3e3225"]
+
+[[material.oil.reaction]]
+name = "ignite"
+other = "fire"
+self_becomes = "fire"
+# other_becomes omitted: the fire cell is unchanged (loader notes, SPEC §6).
+probability = 0.9

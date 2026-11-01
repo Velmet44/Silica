@@ -1,0 +1,11 @@
+schema_version = 1
+
+[material.stone]
+id = 12
+name = "Stone"
+category = "rigid"
+density = 2500
+default_temp = 295
+colors = ["#8d8d8d", "#7f7f7f", "#9a9a9a"]
+# Hard-impact islands re-enter the grid as this powder (SPEC §7.4).
+crumble_into = "sand"

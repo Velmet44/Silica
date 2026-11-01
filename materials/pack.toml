@@ -1,0 +1,8 @@
+# Silica default pack — starter subset for milestone 0.1 (ROADMAP.md).
+# The full 30-material pack (SPEC appendix B) lands in 0.3. Ids are permanent,
+# so this subset already reserves the ids it uses. `empty` (id 0) is implicit
+# and never has a file.
+name = "silica-default"
+version = "0.1.0"
+license = "MIT"
+description = "Starter subset: sand, water, oil, fire, smoke, steam, wood, stone"

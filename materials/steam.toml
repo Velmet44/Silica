@@ -1,0 +1,14 @@
+schema_version = 1
+
+[material.steam]
+id = 6
+name = "Steam"
+category = "gas"
+density = 1
+default_temp = 400
+colors = ["#cfd8dc", "#b0bec5"]
+
+# Condenses → water below 373 K (appendix B). Kept in the starter pack
+# because water's douse reaction targets steam (see materials/README.md).
+[material.steam.transition]
+condense = { below_temp = 373, to = "water" }
