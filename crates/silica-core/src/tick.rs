@@ -3,6 +3,8 @@
 use crate::brush::{self, Brush};
 use crate::error::SilicaError;
 use crate::pack::Category;
+use crate::pack::PROBABILITY_DENOMINATOR;
+use crate::pack::Trigger;
 use crate::region::REGION_SIZE;
 use crate::temp::Temp;
 use crate::world::World;
@@ -37,7 +39,10 @@ impl World {
     ///   swap by density, and disperse horizontally (draft D-012);
     ///   gases rise and jitter horizontally (draft D-013, one D4 draw
     ///   per jitting cell);
-    /// * `reaction_pass`/`heat_pass` — no-op until reactions/heat;
+    /// * `reaction_pass` — real (Commit 4): DSL reactions + combustion,
+    ///   top-down row-major, fixed order (draft D-014 probe order);
+    /// * `heat_pass` — real (Commit 4): 4-neighbour diffusion + phase
+    ///   transitions + energy decay (draft D-015);
     /// * `rigid_pass` — no-op until §7 islands (0.3);
     /// * `pressure_pass` — no-op until pressure v1 (0.3).
     ///
@@ -391,19 +396,181 @@ impl World {
         let _ = self.set_material(x1, y1, id);
     }
 
-    /// §5 pass 4 — no-op in the 0.1 skeleton: reactions arrive with the
-    /// DSL registry (ROADMAP.md 0.1/0.4). Intentionally empty.
+    /// §5 pass 4: DSL reactions + combustion. Top-down row-major, fixed
+    /// order (no parity). One RNG draw per passing attempt (D4); the
+    /// single-update rule prevents a converted cell from being
+    /// re-processed.
+    ///
+    /// Neighbor probe order (draft D-014): left, right, up, down — the
+    /// first neighbor whose material equals `reaction.other` is the
+    /// target. Draft D-014 also leaves the neighbor set at 4 (not 8)
+    /// for 0.1; multi-match priority within one cell is canonical
+    /// reaction order, and a cell converts at most once per tick.
     fn reaction_pass(&mut self) {
         #[cfg(test)]
         self.pass_trace.push("reaction_pass");
+
+        // Top-down row-major.
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = self.cell_index(x, y).expect("bounds checked");
+                let id = self.material[idx];
+                if id == 0 {
+                    continue;
+                }
+                if self.stamp[idx] == self.tick {
+                    continue; // single-update: already written this tick
+                }
+                if !self.regions.is_active(x / REGION_SIZE, y / REGION_SIZE) {
+                    continue;
+                }
+                let reactions = match self.pack.get(id) {
+                    Some(def) => def.reactions.clone(),
+                    None => Vec::new(),
+                };
+                for reaction in &reactions {
+                    // Find the first matching neighbor in probe order.
+                    let mut target: Option<(u16, u16)> = None;
+                    for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                        let nx = x as i32 + dx;
+                        let ny = y as i32 + dy;
+                        if nx < 0 || ny < 0 || nx >= self.width as i32 || ny >= self.height as i32 {
+                            continue;
+                        }
+                        let nidx = self
+                            .cell_index(nx as u16, ny as u16)
+                            .expect("bounds checked");
+                        if self.material[nidx] == reaction.other {
+                            target = Some((nx as u16, ny as u16));
+                            break;
+                        }
+                    }
+                    let Some((tx, ty)) = target else {
+                        continue;
+                    };
+                    // Probability: one draw, fire if draw % denom < numerator.
+                    let draw = self.rng.next_u32();
+                    if (draw % PROBABILITY_DENOMINATOR) >= reaction.probability {
+                        continue;
+                    }
+                    // Apply conversion via spawn semantics.
+                    let self_new = reaction.self_becomes;
+                    if self_new == 0 {
+                        let _ = self.spawn(x, y, 0, Temp::AMBIENT.0, 0);
+                    } else if let Some(def) = self.pack.get(self_new) {
+                        let temp = def.default_temp.0;
+                        let aux = match def.aux_init {
+                            Some(range) => self.draw_aux(range),
+                            None => 0,
+                        };
+                        let _ = self.spawn(x, y, self_new, temp, aux);
+                    }
+                    if let Some(other_new) = reaction.other_becomes {
+                        if other_new == 0 {
+                            let _ = self.spawn(tx, ty, 0, Temp::AMBIENT.0, 0);
+                        } else if let Some(def) = self.pack.get(other_new) {
+                            let temp = def.default_temp.0;
+                            let aux = match def.aux_init {
+                                Some(range) => self.draw_aux(range),
+                                None => 0,
+                            };
+                            let _ = self.spawn(tx, ty, other_new, temp, aux);
+                        }
+                    }
+                    // spread: explosion — deferred (no pressure grid yet).
+                    // One conversion per cell per tick.
+                    break;
+                }
+            }
+        }
     }
 
-    /// §5 pass 5 — no-op in the 0.1 skeleton: temperature diffusion and
-    /// phase transitions arrive with the heat pass (ROADMAP.md 0.1).
-    /// Intentionally empty.
+    /// §5 pass 5: temperature diffusion (4-neighbour, i32
+    /// intermediates, no floats — D1) + phase transitions. Top-down
+    /// row-major, fixed order (no parity).
+    ///
+    /// Energy-category materials (fire) decay their aux by
+    /// `ENERGY_DECAY` per tick (draft D-015: schema v1 has no burn-rate
+    /// key, so this is an engine constant). Transitions fire in
+    /// compiled label order; a cell applies at most one transition per
+    /// tick (draft D-015: multi-match priority = first in label order).
+    /// Diffusion does not stamp cells; material changes via transitions
+    /// stamp via `set_material`.
     fn heat_pass(&mut self) {
         #[cfg(test)]
         self.pass_trace.push("heat_pass");
+
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let cells = width * height;
+
+        // Diffusion: reflective 4-neighbour average into the scratch
+        // buffer (preallocated — no per-tick allocation, §5).
+        for y in 0..height {
+            for x in 0..width {
+                let idx = y * width + x;
+                let mut sum = i32::from(self.temp[idx]);
+                let mut count = 1i32;
+                for (dx, dy) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x as i32 + dx;
+                    let ny = y as i32 + dy;
+                    let nidx = if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
+                        idx
+                    } else {
+                        ny as usize * width + nx as usize
+                    };
+                    sum += i32::from(self.temp[nidx]);
+                    count += 1;
+                }
+                self.heat_scratch[idx] = sum / count;
+            }
+        }
+        for idx in 0..cells {
+            self.temp[idx] = Temp::from_units(self.heat_scratch[idx]).0;
+        }
+
+        // Energy decay + transitions, top-down row-major.
+        const ENERGY_DECAY: u16 = 1;
+        for y in 0..height {
+            for x in 0..width {
+                let idx = y * width + x;
+                let id = self.material[idx];
+                if id == 0 {
+                    continue;
+                }
+                if self.stamp[idx] == self.tick {
+                    continue; // single-update: already written this tick
+                }
+                if !self
+                    .regions
+                    .is_active((x as u16) / REGION_SIZE, (y as u16) / REGION_SIZE)
+                {
+                    continue;
+                }
+                // Energy decay (draft D-015).
+                if self.pack.category_of(id) == Category::Energy {
+                    self.aux[idx] = self.aux[idx].saturating_sub(ENERGY_DECAY);
+                }
+                // Transitions in compiled label order; at most one.
+                if let Some(def) = self.pack.get(id) {
+                    for transition in &def.transitions {
+                        let fires = match transition.trigger {
+                            Trigger::AtTemp { units } => {
+                                i32::from(self.temp[idx]) >= i32::from(units)
+                            }
+                            Trigger::BelowTemp { units } => {
+                                i32::from(self.temp[idx]) < i32::from(units)
+                            }
+                            Trigger::AuxExhausted => self.aux[idx] == 0,
+                        };
+                        if fires {
+                            let _ = self.set_material(x as u16, y as u16, transition.becomes);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// §5 pass 6 — no-op in the 0.1 skeleton: the coarse pressure grid

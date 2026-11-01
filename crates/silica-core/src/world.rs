@@ -75,8 +75,13 @@ pub struct World {
     pub(crate) pack: Pack,
     pub(crate) material: Vec<u16>,
     pub(crate) temp: Vec<i16>,
+    /// Preallocated scratch buffer for the heat pass diffusion (§5):
+    /// i32 intermediates, no per-tick allocation (§5 zero-allocation).
     pub(crate) aux: Vec<u16>,
     pub(crate) stamp: Vec<u32>,
+    /// Preallocated scratch buffer for the heat pass diffusion (§5):
+    /// i32 intermediates, no per-tick allocation (§5 zero-allocation).
+    pub(crate) heat_scratch: Vec<i32>,
     /// Pass audit trail; exists only under test so the §5 order is
     /// pinned by tests. Stripped from release builds.
     #[cfg(test)]
@@ -109,6 +114,7 @@ impl World {
             temp: vec![Temp::AMBIENT.0; cells],
             aux: vec![0; cells],
             stamp: vec![u32::MAX; cells],
+            heat_scratch: vec![0; cells],
             #[cfg(test)]
             pass_trace: Vec::new(),
         }
