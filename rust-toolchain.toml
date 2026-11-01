@@ -1,0 +1,7 @@
+# SPEC.md §8 D9: the toolchain is pinned. Upgrades are explicit PRs and may
+# regenerate golden hashes only with written justification in the PR
+# description (AGENTS.md rule 7).
+[toolchain]
+channel = "1.98.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

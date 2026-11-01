@@ -1,0 +1,17 @@
+[package]
+name = "silica-wasm"
+description = "wasm-bindgen surface for Silica, powering the browser playground."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+# cdylib for wasm-pack; rlib so `cargo test` and `wasm-pack test` work.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+silica-core = { path = "../silica-core" }
+
+# wasm-bindgen arrives with milestone 0.2 (ROADMAP.md). `unsafe` will be
+# confined to JS boundary shims, each with a `// SAFETY:` comment
+# (AGENTS.md rule 5).

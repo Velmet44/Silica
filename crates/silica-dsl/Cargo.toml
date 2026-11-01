@@ -1,0 +1,11 @@
+[package]
+name = "silica-dsl"
+description = "TOML material packs compiled into the silica-core material registry."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# The registry types this crate compiles into are defined by silica-core,
+# which itself stays dependency-free (AGENTS.md rule 6).
+silica-core = { path = "../silica-core" }

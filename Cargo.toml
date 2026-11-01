@@ -1,0 +1,25 @@
+# Silica — cargo workspace (SPEC.md §11).
+#
+# Members are exactly the five crates of the spec layout; tools/, tests/,
+# examples/ and playground/ join as their milestones land (ROADMAP.md).
+[workspace]
+resolver = "3"
+members = [
+    "crates/silica-core",
+    "crates/silica-dsl",
+    "crates/silica-formats",
+    "crates/silica-capi",
+    "crates/silica-wasm",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+# SPEC.md §8 D2 / AGENTS.md rule 2: release builds keep overflow checks on,
+# so any plain `+`/`-`/`*` that can overflow is a CI failure. This profile
+# is part of the determinism contract, not a tuning knob — changes require
+# a DECISIONS.md entry.
+[profile.release]
+overflow-checks = true

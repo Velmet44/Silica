@@ -1,0 +1,11 @@
+[package]
+name = "silica-core"
+description = "Falling-sand simulation core: world state, tick pipeline, regions, rigid islands."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# AGENTS.md rule 6 / SPEC.md pillar 2: silica-core has zero dependencies —
+# not even serde. Nothing may ever be listed below without a DECISIONS.md
+# entry.
+[dependencies]

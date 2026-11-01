@@ -1,0 +1,9 @@
+[package]
+name = "silica-formats"
+description = "Save, load and replay formats for Silica worlds (SPEC.md appendix A)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+silica-core = { path = "../silica-core" }
