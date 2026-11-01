@@ -15,6 +15,7 @@ Changing an accepted decision requires a new entry — never a silent edit.
 | D-008 | 2026-10-31 | **Spec kit: full package** — this directory — before any code | Accepted |
 | D-009 | 2026-10-31 | **DSL loader notes finalized** (SPEC §6): one file per material; transition keys `at_temp`/`below_temp`/`aux_exhausted`; optional `other_becomes`, `probability`, `spread`, `aux_init`, `crumble_into`; starter pack ships 8 materials + steam | Accepted |
 | D-010 | 2026-11-01 | **Ratified: canonical hash layout, sweep parity, paint rule** — the first golden manifest is permanent | Accepted |
+| D-011 | 2026-11-01 | **Pack identity byte framing** — FNV-1a 64 over the sorted file list + framed, LF-normalized file bytes (SPEC §6, D11) | Accepted |
 
 ## Rationale
 
@@ -99,6 +100,26 @@ seed 0, 64×48, walled, pile never reaches the side walls.
 Consequence: the 20 lines of `tests/golden/manifest.txt` and the 2×2
 anchor are permanent; changing either requires a new entry here plus
 the AGENTS rule-7 written justification.
+
+**D-011 Pack identity byte framing.** Ratifying the byte-level framing
+that `eaa83c4` (the material pack registry, SPEC §6) shipped, so the
+pack hash is a byte-level contract matching `Pack::hash`, D11 and
+appendix A's save format:
+(1) the file list sorts by **file-name bytes** and includes
+`pack.toml` (one manifest per pack);
+(2) each file contributes, in order, `u32 LE name length`, the name
+bytes, `u32 LE content length`, then the content bytes **LF-normalized**
+(CRLF pairs become LF, lone CRs stay verbatim);
+(3) the whole stream folds into **one** FNV-1a 64 (offset basis
+`0xcbf29ce484222325`, prime `0x100000001b3`), matching the published
+FNV test vectors in `hash.rs`;
+(4) LF normalization + the `.gitattributes` pin (`*.toml`/`*.rs`/
+`tests/golden/manifest.txt` to LF) mean an `core.autocrlf` checkout
+cannot fork the identity — the same pack bytes hash identically on
+Windows and Linux.
+The shipped starter pack identifies as `0xc8ce7d9f920fd109`; any change
+to the framing requires a new entry here plus the AGENTS rule-7
+written justification, and re-hashes every pack in saves/replays.
 
 ## Still open
 
