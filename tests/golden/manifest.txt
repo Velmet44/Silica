@@ -1,0 +1,31 @@
+# Silica golden manifest (TESTING.md pillar 1, SPEC appendix A).
+#
+# One line per checkpoint:  world <TAB> tick <TAB> hash-as-16-lowercase-hex
+#
+# Hash layout (appendix A): u32 tick LE | u32[4] rng_state LE | u16
+# material row-major | u16 temp | u16 aux — three separate row-major
+# streams, FNV-1a 64. MGOLD: these values are locked artifacts; to
+# regenerate, run `cargo test -p silica-tests --test golden
+# print_manifest_hashes -- --ignored --nocapture` and provide the
+# written justification AGENTS.md rule 7 demands ("what changed, why,
+# which worlds affected").
+column_collapse	500	755803b8e3f562a3
+column_collapse	1000	4815d1c9d4997011
+column_collapse	1500	8afef15b3a42c40f
+column_collapse	2000	1e006adc4cfcaba5
+column_collapse	2500	146f801918d8aa3b
+column_collapse	3000	011a89bee3bb9189
+column_collapse	3500	02c5d8eae2a96637
+column_collapse	4000	b07df70a04bbe5ed
+column_collapse	4500	8db5750f1eed90d3
+column_collapse	5000	20e784efe947ea61
+column_collapse	5500	f18d9ab434bdbc9f
+column_collapse	6000	e316ce74f9c649d5
+column_collapse	6500	aaf563079ba4af8b
+column_collapse	7000	7c9929d6b8dbbef9
+column_collapse	7500	e596023b4d92f7a7
+column_collapse	8000	47a1ea44bfe5267d
+column_collapse	8500	b135c3d310685783
+column_collapse	9000	c5da9c42ba133fb1
+column_collapse	9500	fab1b88f6dcfc22f
+column_collapse	10000	f879cff39baed045

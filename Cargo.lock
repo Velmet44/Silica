@@ -28,6 +28,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "silica-tests"
+version = "0.1.0"
+dependencies = [
+ "silica-core",
+]
+
+[[package]]
 name = "silica-wasm"
 version = "0.1.0"
 dependencies = [

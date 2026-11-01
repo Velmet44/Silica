@@ -28,20 +28,30 @@
 //! The world model of `SPEC.md` §4 is implemented: SoA cell storage, the
 //! fixed-point temperature type, the 32×32 region grid with activity
 //! flags, the stamp trick, anchors, and the seeded RNG stream. The §5
-//! tick pipeline is not implemented — nothing draws from the RNG yet, and
-//! the write primitives stay crate-private until the passes take shape.
-//! The `pack` field of the §9 `WorldConfig` sketch arrives with the §6
-//! compiled registry.
+//! tick skeleton is in place: seven passes run in the documented order
+//! with `World::step`, the tick counter advances once per step, and the
+//! canonical state hash (FNV-1a 64 over the appendix-A buffer) is
+//! exposed. Brush strokes (`Brush`, `World::paint`) enter the world;
+//! powder movement (the starter pack's sand) is real; liquids, gases,
+//! reactions, heat, islands and pressure are documented no-op stages
+//! pending their milestones. Nothing draws from the RNG in a steady
+//! tick yet — the documented consumption points arrive with the pack
+//! registry (§6). The `pack` field of the §9 `WorldConfig` sketch
+//! joins with the §6 compiled registry.
 
 #![deny(clippy::float_arithmetic)]
 #![forbid(unsafe_code)]
 
+mod brush;
 mod error;
+mod hash;
 mod region;
 mod rng;
 mod temp;
+mod tick;
 mod world;
 
+pub use brush::Brush;
 pub use error::SilicaError;
 pub use temp::Temp;
 pub use world::{CellView, World, WorldConfig};

@@ -1,6 +1,10 @@
-//! The world: SoA cell storage, regions, stamps, RNG (SPEC.md §4).
+//! The world: SoA cell storage, regions, stamps, RNG, the tick surface
+//! (SPEC.md §3/§4/§9) and the canonical state hash (appendix A).
 
+use crate::brush;
+use crate::brush::Brush;
 use crate::error::SilicaError;
+use crate::hash::Fnv1a64;
 use crate::region::RegionGrid;
 use crate::rng::Rng;
 use crate::temp::Temp;
@@ -9,7 +13,8 @@ use crate::temp::Temp;
 ///
 /// The `pack` field of the §9 sketch joins when the compiled registry
 /// type lands with the §6 loader (ROADMAP.md 0.1); until then material
-/// ids are stored unvalidated.
+/// ids are stored unvalidated and the movement pass treats only the
+/// starter-pack sand (id 1) as a powder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WorldConfig {
     /// Grid width in cells, 1..=u16::MAX.
@@ -21,6 +26,9 @@ pub struct WorldConfig {
     /// Whether the map edges behave as walls — anchors per SPEC.md §4.
     /// The default value is an open question in SPEC.md §15, decided
     /// before 0.2.
+    /// Read only by [`World::is_anchor`], which the §7 rigid support
+    /// analysis will call (ROADMAP.md 0.3).
+    #[allow(dead_code)]
     pub walls: bool,
 }
 
@@ -55,17 +63,26 @@ pub struct CellView {
 /// allocates (SPEC.md §5). Every write stamps the cell with the current
 /// tick (the bookkeeping behind §5's single-update rule) and wakes the
 /// cell's region. Cells are addressed `(x, y)` with `x` the column.
+///
+/// The fields are crate-visible so the pass modules (`tick.rs`) can scan
+/// the SoA arrays directly; the movement inner loop is hot-path code and
+/// must not pay an accessor indirection. Public API stays the §9 sketch
+/// surface; outside this crate the world is opaque.
 pub struct World {
-    width: u16,
-    height: u16,
-    walls: bool,
-    tick: u32,
-    rng: Rng,
-    regions: RegionGrid,
-    material: Vec<u16>,
-    temp: Vec<i16>,
-    aux: Vec<u16>,
-    stamp: Vec<u32>,
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    pub(crate) walls: bool,
+    pub(crate) tick: u32,
+    pub(crate) rng: Rng,
+    pub(crate) regions: RegionGrid,
+    pub(crate) material: Vec<u16>,
+    pub(crate) temp: Vec<i16>,
+    pub(crate) aux: Vec<u16>,
+    pub(crate) stamp: Vec<u32>,
+    /// Pass audit trail; exists only under test so the §5 order is
+    /// pinned by tests. Stripped from release builds.
+    #[cfg(test)]
+    pub(crate) pass_trace: Vec<&'static str>,
 }
 
 impl World {
@@ -93,6 +110,8 @@ impl World {
             temp: vec![Temp::AMBIENT.0; cells],
             aux: vec![0; cells],
             stamp: vec![u32::MAX; cells],
+            #[cfg(test)]
+            pass_trace: Vec::new(),
         }
     }
 
@@ -106,7 +125,7 @@ impl World {
         self.height
     }
 
-    /// The current tick; 0 until the §5 pipeline starts stepping.
+    /// The current tick; 0 until the pipeline starts stepping.
     pub fn tick(&self) -> u32 {
         self.tick
     }
@@ -127,11 +146,57 @@ impl World {
         })
     }
 
+    /// Paints a brush at the current tick: covered cells take the brush
+    /// material (clamped to the world), are stamped, and wake their
+    /// regions; their temperature and aux stay as they were (v0 paint
+    /// semantics; aux spawning arrives with the §6 pack registry).
+    ///
+    /// Cells painted this tick do not move again this tick: the §5
+    /// single-update rule sees their fresh stamp.
+    pub fn paint(&mut self, brush: &Brush) {
+        brush::paint(self, brush)
+    }
+
+    /// The canonical state hash (SPEC.md §9, appendix A): FNV-1a 64
+    /// over `u32 tick` LE · `u32[4] rng_state` LE · then three separate
+    /// row-major `u16` LE streams — `material`, then `temp`, then `aux`
+    /// — mirroring the save format's "for material, then temp, then
+    /// aux". Streams the bytes directly; nothing is allocated (§5).
+    ///
+    /// Layout note for review: appendix A's one-liner also admits a
+    /// per-cell interleaved reading (`(material, temp, aux)` triplets);
+    /// the two differ for any multi-cell world. This implementation
+    /// picks the three-streams reading and known-answer tests encode
+    /// exactly that — see `state_hash_matches_the_known_answer_…`.
+    ///
+    /// The buffer does not include stamps or region activity: they are
+    /// derived bookkeeping recomputable from the painted history, not
+    /// simulation state.
+    pub fn state_hash(&self) -> u64 {
+        let mut h = Fnv1a64::new();
+        h.update(&self.tick.to_le_bytes());
+        for word in self.rng.state() {
+            h.update(&word.to_le_bytes());
+        }
+        for &m in &self.material {
+            h.update(&m.to_le_bytes());
+        }
+        for &t in &self.temp {
+            // Temperature is non-negative by construction (clamped on
+            // store); hashing `i16::to_le_bytes` gives the canonical
+            // little-endian two's-complement bytes either way.
+            h.update(&t.to_le_bytes());
+        }
+        for &a in &self.aux {
+            h.update(&a.to_le_bytes());
+        }
+        h.finish()
+    }
+
     /// Writes a cell's material id.
     ///
     /// Ids are not registry-validated until the compiled pack lands
     /// (§6). Stamps the cell and wakes its region.
-    #[allow(dead_code)] // the §5/§6 passes write cells through this
     pub(crate) fn set_material(&mut self, x: u16, y: u16, id: u16) -> Result<(), SilicaError> {
         let idx = self
             .cell_index(x, y)
@@ -143,7 +208,7 @@ impl World {
 
     /// Writes a cell temperature from `i32` units, clamped on store
     /// (SPEC.md §4). Stamps the cell and wakes its region.
-    #[allow(dead_code)] // the §5 heat pass stores its i32 arithmetic here
+    #[allow(dead_code)] // consumed by the §5 heat pass
     pub(crate) fn set_temp(&mut self, x: u16, y: u16, units: i32) -> Result<(), SilicaError> {
         let idx = self
             .cell_index(x, y)
@@ -155,7 +220,7 @@ impl World {
 
     /// Writes a cell's aux word as-is; aux arithmetic arrives with §5/§6
     /// and never wraps (TESTING.md pillar 3). Stamps + wakes.
-    #[allow(dead_code)] // the §5/§6 aux-driven behaviours write through this
+    #[allow(dead_code)] // consumed by the §5/§6 aux-driven behaviours
     pub(crate) fn set_aux(&mut self, x: u16, y: u16, aux: u16) -> Result<(), SilicaError> {
         let idx = self
             .cell_index(x, y)
@@ -170,7 +235,7 @@ impl World {
     /// The §5 single-update rule compares stamps against the current
     /// tick. Initial stamps are `u32::MAX`, which no early tick equals;
     /// the guarantee degrades only if a run reaches tick `u32::MAX`.
-    #[allow(dead_code)] // consumed by the §5 single-update rule
+    #[allow(dead_code)] // consumed by the §5 movement pass hot loop
     pub(crate) fn stamp_of(&self, x: u16, y: u16) -> Option<u32> {
         Some(self.stamp[self.cell_index(x, y)?])
     }
@@ -189,14 +254,8 @@ impl World {
         self.walls && (x == 0 || y == 0 || x == self.width - 1)
     }
 
-    /// Records a write: stamp with the current tick, wake the region.
-    fn touch(&mut self, idx: usize, x: u16, y: u16) {
-        self.stamp[idx] = self.tick;
-        self.regions.activate_cell(x, y);
-    }
-
     /// Row-major index of `(x, y)`, or `None` outside the grid.
-    fn cell_index(&self, x: u16, y: u16) -> Option<usize> {
+    pub(crate) fn cell_index(&self, x: u16, y: u16) -> Option<usize> {
         if x >= self.width || y >= self.height {
             return None;
         }
@@ -206,11 +265,18 @@ impl World {
             .checked_mul(self.width as usize)
             .and_then(|row| row.checked_add(x as usize))
     }
+
+    /// Records a write: stamp with the current tick, wake the region.
+    pub(crate) fn touch(&mut self, idx: usize, x: u16, y: u16) {
+        self.stamp[idx] = self.tick;
+        self.regions.activate_cell(x, y);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{World, WorldConfig};
+    use crate::brush::Brush;
     use crate::error::SilicaError;
     use crate::rng::Rng;
     use crate::temp::Temp;
@@ -223,6 +289,10 @@ mod tests {
             walls: true,
         }
     }
+
+    /// Appendix B, id 1: sand (starter-pack value, used before the §6
+    /// registry replaces the hard-coded category knowledge).
+    const SAND_TEST_ID: u16 = 1;
 
     #[test]
     fn new_initializes_every_cell_empty_at_ambient() {
@@ -434,5 +504,108 @@ mod tests {
             seed: 0,
             walls: true,
         });
+    }
+
+    // --- canonical state hash (appendix A) --------------------------------
+
+    /// 1×1, seed 42, tick 0: 26 bytes — tick(4) + rng(16) + 3×u16 per
+    /// cell. Known answer computed independently with a JS FNV-1a
+    /// re-implementation before being locked here.
+    #[test]
+    fn state_hash_matches_the_known_answer_1_by_1_seed_42() {
+        let world = World::new(cfg(1, 1, 42));
+        assert_eq!(world.state_hash(), 0xfe8c_3b38_de4d_130c);
+    }
+
+    /// Same world shape with seed 0 — pins the rng_state field's
+    /// participation in the hash.
+    #[test]
+    fn state_hash_matches_the_known_answer_1_by_1_seed_0() {
+        let world = World::new(cfg(1, 1, 0));
+        assert_eq!(world.state_hash(), 0xc59f_662a_8cb1_3780);
+    }
+
+    /// Heterogeneous multi-cell known answer, tick 9 (2×2, seed 42):
+    /// sand at (0,0), 400 K at (1,0), aux 7 at (0,1), rest empty at
+    /// ambient. This pins the three-streams reading of appendix A —
+    /// a per-cell interleaved buffer would hash this state to
+    /// `0xe890_3a54_71cf_3701` instead (computed alongside, reported
+    /// in the PR for review).
+    #[test]
+    fn state_hash_matches_the_known_answer_2_by_2_tick_9() {
+        let mut world = World::new(cfg(2, 2, 42));
+        world.paint(&Brush::rect(0, 0, 0, 0, SAND_TEST_ID));
+        world.set_temp(1, 0, 1600).unwrap(); // 400 K
+        world.set_aux(0, 1, 7).unwrap();
+        world.tick = 9;
+        assert_eq!(world.state_hash(), 0xd59b_7dfd_ddde_a099);
+    }
+
+    /// The same state one tick earlier — pins the tick field's
+    /// participation byte for byte.
+    #[test]
+    fn state_hash_matches_the_known_answer_2_by_2_tick_8() {
+        let mut world = World::new(cfg(2, 2, 42));
+        world.paint(&Brush::rect(0, 0, 0, 0, SAND_TEST_ID));
+        world.set_temp(1, 0, 1600).unwrap();
+        world.set_aux(0, 1, 7).unwrap();
+        world.tick = 8;
+        assert_eq!(world.state_hash(), 0x4e9d_2198_5587_a784);
+    }
+
+    /// Every hashed state field must move the hash when it changes:
+    /// tick, rng_state, material, temp and aux are each varied against
+    /// an otherwise-identical twin world.
+    #[test]
+    fn state_hash_distinguishes_every_state_field() {
+        let baseline = World::new(cfg(8, 8, 7));
+        let hash_of = |w: &World| w.state_hash();
+
+        // rng_state via the seed.
+        let w = World::new(cfg(8, 8, 8));
+        assert_ne!(hash_of(&w), hash_of(&baseline));
+
+        // tick: identical worlds, one stepped.
+        let mut w = World::new(cfg(8, 8, 7));
+        w.step(&[]).unwrap();
+        assert_ne!(hash_of(&w), hash_of(&baseline));
+
+        // material.
+        let mut w = World::new(cfg(8, 8, 7));
+        w.paint(&Brush::rect(4, 4, 4, 4, SAND_TEST_ID));
+        assert_ne!(hash_of(&w), hash_of(&baseline));
+
+        // temp.
+        let mut w = World::new(cfg(8, 8, 7));
+        w.set_temp(4, 4, 1600).unwrap();
+        assert_ne!(hash_of(&w), hash_of(&baseline));
+
+        // aux.
+        let mut w = World::new(cfg(8, 8, 7));
+        w.set_aux(4, 4, 3).unwrap();
+        assert_ne!(hash_of(&w), hash_of(&baseline));
+    }
+
+    /// A cell that moves changes the hash (movement is a material
+    /// write, and the buffer pins exactly where material lives). The
+    /// painted grain skips its placement tick, so it moves on the
+    /// second step.
+    #[test]
+    fn state_hash_advances_when_a_cell_moves() {
+        let mut world = World::new(WorldConfig {
+            width: 16,
+            height: 16,
+            seed: 0,
+            walls: true,
+        });
+        world.paint(&Brush::rect(3, 3, 3, 3, SAND_TEST_ID));
+        let before = world.state_hash();
+        world.step(&[]).unwrap(); // placement tick: no movement
+        assert_eq!(world.cell(3, 3).unwrap().material, SAND_TEST_ID);
+        assert_ne!(world.state_hash(), before); // the tick advanced
+        world.step(&[]).unwrap(); // now it falls
+        assert_eq!(world.cell(3, 4).unwrap().material, SAND_TEST_ID);
+        assert_eq!(world.cell(3, 3).unwrap().material, 0);
+        assert_ne!(world.state_hash(), before);
     }
 }

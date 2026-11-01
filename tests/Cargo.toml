@@ -1,0 +1,25 @@
+# Silica — golden-world package (SPEC.md §11, TESTING.md pillar 1).
+#
+# Self-documenting test package: worlds are committed generators, not
+# binaries; the only committed artifact per TESTING.md is the manifest
+# (tests/golden/manifest.txt).
+[package]
+name = "silica-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# SPEC §11 keeps this package flat — `tests/golden.rs` is the manifest
+# comparison test and `tests/golden/` holds the manifest. Declaring the
+# target explicitly keeps those paths instead of cargo's conventional
+# `<pkg>/tests/` subdirectory.
+[[test]]
+name = "golden"
+path = "golden.rs"
+
+[dependencies]
+silica-core = { path = "../crates/silica-core" }

@@ -1,7 +1,9 @@
 # Silica — cargo workspace (SPEC.md §11).
 #
-# Members are exactly the five crates of the spec layout; tools/, tests/,
-# examples/ and playground/ join as their milestones land (ROADMAP.md).
+# Members are the five spec crates plus the golden-world package
+# (spec §11: tests/ = "golden worlds + generators (code, not
+# binaries)"); tools/, examples/ and playground/ join as their
+# milestones land (ROADMAP.md).
 [workspace]
 resolver = "3"
 members = [
@@ -10,6 +12,7 @@ members = [
     "crates/silica-formats",
     "crates/silica-capi",
     "crates/silica-wasm",
+    "tests",
 ]
 
 [workspace.package]
