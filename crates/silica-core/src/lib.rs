@@ -25,9 +25,23 @@
 //!
 //! # Status
 //!
-//! Scaffold only — no simulation behavior is implemented yet. The public
-//! surface of `SPEC.md` §9 lands with milestone 0.1 (ROADMAP.md), together
-//! with the tick pipeline and the first golden worlds.
+//! The world model of `SPEC.md` §4 is implemented: SoA cell storage, the
+//! fixed-point temperature type, the 32×32 region grid with activity
+//! flags, the stamp trick, anchors, and the seeded RNG stream. The §5
+//! tick pipeline is not implemented — nothing draws from the RNG yet, and
+//! the write primitives stay crate-private until the passes take shape.
+//! The `pack` field of the §9 `WorldConfig` sketch arrives with the §6
+//! compiled registry.
 
 #![deny(clippy::float_arithmetic)]
 #![forbid(unsafe_code)]
+
+mod error;
+mod region;
+mod rng;
+mod temp;
+mod world;
+
+pub use error::SilicaError;
+pub use temp::Temp;
+pub use world::{CellView, World, WorldConfig};
