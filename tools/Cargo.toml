@@ -1,0 +1,16 @@
+[package]
+name = "silica-tools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "silica"
+path = "src/main.rs"
+
+[dependencies]
+silica-core = { path = "../crates/silica-core" }
+silica-dsl = { path = "../crates/silica-dsl" }
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

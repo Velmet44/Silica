@@ -293,7 +293,46 @@ impl World {
         (u32::from(range.lo) + offset) as u16
     }
 
-    /// The tick this cell was last written; `u32::MAX` means never.
+    /// Renders the world into an RGBA buffer (`width * height * 4`
+    /// bytes, row-major): the pack's color variant for the cell's
+    /// material (`(x*7 + y*13) % len(colors)`, §6, never the RNG), or
+    /// the background color for `empty`. Convenience for hosts and the
+    /// `silica render` tool (§9, §10); never affects the tick.
+    ///
+    /// Background color for `empty` is drafted here (SPEC §6 is silent):
+    /// a dark slate `(24, 24, 28, 255)` — flagged for review (→ D-016
+    /// draft).
+    pub fn render_rgba(&self, buf: &mut [u8]) {
+        debug_assert_eq!(
+            buf.len(),
+            (self.width as usize) * (self.height as usize) * 4
+        );
+        let mut i = 0;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                let idx = self.cell_index(x, y).expect("in-bounds");
+                let material = self.material[idx];
+                let (r, g, b) = if material == 0 {
+                    (24u8, 24u8, 28u8)
+                } else {
+                    match self.pack.get(material) {
+                        Some(def) if !def.colors.is_empty() => {
+                            let variant =
+                                (usize::from(x) * 7 + usize::from(y) * 13) % def.colors.len();
+                            let c = def.colors[variant];
+                            (c[0], c[1], c[2])
+                        }
+                        _ => (200, 200, 200),
+                    }
+                };
+                buf[i] = r;
+                buf[i + 1] = g;
+                buf[i + 2] = b;
+                buf[i + 3] = 255;
+                i += 4;
+            }
+        }
+    }
     ///
     /// The §5 single-update rule compares stamps against the current
     /// tick. Initial stamps are `u32::MAX`, which no early tick equals;

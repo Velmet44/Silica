@@ -13,6 +13,7 @@ members = [
     "crates/silica-capi",
     "crates/silica-wasm",
     "tests",
+    "tools",
 ]
 
 [workspace.package]
