@@ -15,6 +15,7 @@
 use std::path::Path;
 
 use silica_core::{Brush, Category, Pack, World, WorldConfig};
+use silica_dsl;
 
 /// The starter pack the golden worlds run against — loaded from disk
 /// (deterministic content, no clock or environment) and identity-checked
@@ -40,6 +41,14 @@ fn starter_pack() -> Pack {
 /// Appendix B, id 1: sand — the starter pack's powder, loaded from
 /// the compiled registry (§6) rather than a hard-coded literal.
 const SAND: u16 = 1;
+/// Appendix B, id 2: water.
+const WATER: u16 = 2;
+/// Appendix B, id 3: oil — floats on water (density 850 < 1000).
+const OIL: u16 = 3;
+/// Appendix B, id 4: fire.
+const FIRE: u16 = 4;
+/// Appendix B, id 7: wood.
+const WOOD: u16 = 7;
 
 /// World #1 — `column_collapse` (TESTING.md pillar 1: "powder piling,
 /// angle of repose").
@@ -75,5 +84,74 @@ pub fn column_collapse() -> World {
     world
         .paint(&Brush::rect(29, 4, 33, 23, SAND))
         .expect("sand is defined by the starter pack");
+    world
+}
+
+/// World #2 — `lake_drain` (TESTING.md pillar 1: liquids, dispersion,
+/// density ordering).
+///
+/// Script: a layer of oil (density 850) over water (density 1000) in a
+/// walled 64×48 world. Water, being heavier, sinks through the oil
+/// (density swap, draft D-012) and pools at the bottom; oil floats to
+/// the top and disperses horizontally (draft D-012 cap = 4). No RNG is
+/// consumed at paint (neither water nor oil declares `aux_init`), so
+/// the seed participates only through the initial `rng_state` words.
+/// The world settles once the two liquids have separated.
+pub fn lake_drain() -> World {
+    let pack = starter_pack();
+    let mut world = World::new(WorldConfig {
+        width: 64,
+        height: 48,
+        seed: 0,
+        walls: true,
+        pack: &pack,
+    });
+    // Water basin first, then oil on top.
+    world
+        .paint(&Brush::rect(8, 24, 55, 32, WATER))
+        .expect("water is defined by the starter pack");
+    world
+        .paint(&Brush::rect(8, 16, 55, 23, OIL))
+        .expect("oil is defined by the starter pack");
+    world
+}
+
+/// World #3 — `forest_fire` (TESTING.md pillar 1: combustion, fire life,
+/// smoke decay).
+///
+/// Script: a wooden box (wood, id 7) in a walled 64×48 world with a
+/// single ignition point (fire, id 4). Fire spreads to adjacent wood
+/// via the `ignite` reaction (probability 0.05), burns out to smoke
+/// when its aux (fire life, 30..90) reaches 0 (draft D-015 decay = 1
+/// per tick), and smoke dissipates to empty (probability 0.001). Heat
+/// diffusion (draft D-015, 4-neighbour average) carries temperature
+/// between cells. RNG consumption happens at paint (fire's `aux_init`
+/// draw per spawned fire cell) and at every reaction attempt (D4).
+pub fn forest_fire() -> World {
+    let pack = starter_pack();
+    let mut world = World::new(WorldConfig {
+        width: 64,
+        height: 48,
+        seed: 0,
+        walls: true,
+        pack: &pack,
+    });
+    // Wooden box.
+    world
+        .paint(&Brush::rect(20, 20, 44, 20, WOOD))
+        .expect("wood is defined by the starter pack");
+    world
+        .paint(&Brush::rect(20, 35, 44, 35, WOOD))
+        .expect("wood is defined by the starter pack");
+    world
+        .paint(&Brush::rect(20, 21, 20, 34, WOOD))
+        .expect("wood is defined by the starter pack");
+    world
+        .paint(&Brush::rect(44, 21, 44, 34, WOOD))
+        .expect("wood is defined by the starter pack");
+    // Ignition point at the top of the box.
+    world
+        .paint(&Brush::rect(32, 20, 32, 20, FIRE))
+        .expect("fire is defined by the starter pack");
     world
 }

@@ -17,6 +17,8 @@ use silica_tests::generators;
 fn generator_for(world: &str) -> World {
     match world {
         "column_collapse" => generators::column_collapse(),
+        "lake_drain" => generators::lake_drain(),
+        "forest_fire" => generators::forest_fire(),
         other => panic!(
             "manifest names unknown golden world '{other}' — register a generator in golden.rs"
         ),
@@ -173,7 +175,7 @@ fn assert_settled(world_name: &str, world: &mut World) {
 #[test]
 #[ignore = "prints manifest hashes — run only to generate or regenerate goldens, with AGENTS.md rule 7 justification"]
 fn print_manifest_hashes() {
-    for world_name in ["column_collapse"] {
+    for world_name in ["column_collapse", "lake_drain", "forest_fire"] {
         let mut world = generator_for(world_name);
         for tick in (500..=10_000).step_by(500) {
             while world.tick() < tick {
