@@ -31,7 +31,12 @@ struct RenderArgs {
     /// Total ticks to simulate.
     #[arg(long, default_value_t = 600)]
     ticks: u32,
-    /// Write a frame every N ticks.
+    /// World width in cells.
+    #[arg(long, default_value_t = 64)]
+    width: u16,
+    /// World height in cells.
+    #[arg(long, default_value_t = 48)]
+    height: u16,
     #[arg(long, default_value_t = 10)]
     every: u32,
     /// Output directory for the PNG frames.
@@ -69,12 +74,11 @@ fn starter_pack() -> silica_core::Pack {
     silica_dsl::load_pack(&dir).expect("starter pack must load")
 }
 
-fn build_world(kind: WorldKind) -> (World, Vec<(u32, Vec<Brush>)>) {
+fn build_world(kind: WorldKind, width: u16, height: u16) -> (World, Vec<(u32, Vec<Brush>)>) {
     let pack = starter_pack();
-    let (w, h) = (64u16, 48u16);
     let mut world = World::new(WorldConfig {
-        width: w,
-        height: h,
+        width,
+        height,
         seed: 0,
         walls: true,
         pack: &pack,
@@ -148,7 +152,7 @@ fn main() {
 }
 
 fn run_render(args: RenderArgs) {
-    let (mut world, scheduled) = build_world(args.world);
+    let (mut world, scheduled) = build_world(args.world, args.width, args.height);
     fs::create_dir_all(&args.out).expect("create output dir");
 
     let total = args.ticks;
