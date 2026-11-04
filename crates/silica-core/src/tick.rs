@@ -36,13 +36,13 @@ impl World {
     ///   draws (D4, one per spawned cell) happen inside each stroke;
     /// * `movement_pass` — real: powder + liquid + gas, dispatched
     ///   through the §6 pack registry's category table; liquids fall,
-    ///   swap by density, and disperse horizontally (draft D-012);
-    ///   gases rise and jitter horizontally (draft D-013, one D4 draw
+    ///   swap by density, and disperse horizontally (flagged for review (-> D-012 draft));
+    ///   gases rise and jitter horizontally (flagged for review (-> D-013 draft), one D4 draw
     ///   per jitting cell);
     /// * `reaction_pass` — real (Commit 4): DSL reactions + combustion,
-    ///   top-down row-major, fixed order (draft D-014 probe order);
+    ///   top-down row-major, fixed order (flagged for review (-> D-014 draft) probe order);
     /// * `heat_pass` — real (Commit 4): 4-neighbour diffusion + phase
-    ///   transitions + energy decay (draft D-015);
+    ///   transitions + energy decay (flagged for review (-> D-015 draft));
     /// * `rigid_pass` — no-op until §7 islands (0.3);
     /// * `pressure_pass` — no-op until pressure v1 (0.3).
     ///
@@ -214,7 +214,7 @@ impl World {
         // Neither diagonal free: the grain stays put this tick.
     }
 
-    /// Liquid movement (Commit 2, draft D-012): fall → diagonal →
+    /// Liquid movement (Commit 2, flagged for review (-> D-012 draft)): fall → diagonal →
     /// horizontal dispersion, all gated on the single-update stamp.
     ///
     /// * Straight down: move into an empty cell, or **swap** with a
@@ -246,7 +246,7 @@ impl World {
             if self.pack.category_of(below_id) == Category::Liquid {
                 let below_density = self.pack.get(below_id).map(|def| def.density).unwrap_or(0);
                 if density > below_density {
-                    // Heavier-over-lighter swap (draft D-012: straight-down only).
+                    // Heavier-over-lighter swap (flagged for review (-> D-012 draft): straight-down only).
                     self.swap_liquid(x, y, x, below);
                     return;
                 }
@@ -319,12 +319,12 @@ impl World {
         let _ = self.spawn(x1, y1, m0, t0, a0);
     }
 
-    /// Gas movement (Commit 3, draft D-013): rise when free; otherwise
+    /// Gas movement (Commit 3, flagged for review (-> D-013 draft)): rise when free; otherwise
     /// horizontal jitter. Jitter is a documented D4 consumption point.
     ///
     /// * Rise: move up into an empty cell (no draw).
     /// * Jitter: one `u32` draw per jitting cell; `word % 3` maps to
-    ///   0 = left, 1 = right, 2 = stay (draft D-013). The move only
+    ///   0 = left, 1 = right, 2 = stay (flagged for review (-> D-013 draft)). The move only
     ///   happens into an empty in-bounds cell; a blocked or out-of-bounds
     ///   target leaves the gas in place (the draw is still consumed).
     /// * Gases ignore density, never swap downward through liquids, and
@@ -371,7 +371,7 @@ impl World {
     }
 
     /// Horizontal dispersion budget for liquids (schema v1 has no
-    /// dispersion key, so this is an engine constant — draft D-012).
+    /// dispersion key, so this is an engine constant — flagged for review (-> D-012 draft)).
     const LIQUID_DISPERSION: u16 = 4;
 
     /// A destination cell is free when its material is empty.
@@ -401,7 +401,7 @@ impl World {
     /// single-update rule prevents a converted cell from being
     /// re-processed.
     ///
-    /// Neighbor probe order (draft D-014): left, right, up, down — the
+    /// Neighbor probe order (flagged for review (-> D-014 draft)): left, right, up, down — the
     /// first neighbor whose material equals `reaction.other` is the
     /// target. Draft D-014 also leaves the neighbor set at 4 (not 8)
     /// for 0.1; multi-match priority within one cell is canonical
@@ -490,10 +490,10 @@ impl World {
     /// row-major, fixed order (no parity).
     ///
     /// Energy-category materials (fire) decay their aux by
-    /// `ENERGY_DECAY` per tick (draft D-015: schema v1 has no burn-rate
+    /// `ENERGY_DECAY` per tick (flagged for review (-> D-015 draft): schema v1 has no burn-rate
     /// key, so this is an engine constant). Transitions fire in
     /// compiled label order; a cell applies at most one transition per
-    /// tick (draft D-015: multi-match priority = first in label order).
+    /// tick (flagged for review (-> D-015 draft): multi-match priority = first in label order).
     /// Diffusion does not stamp cells; material changes via transitions
     /// stamp via `set_material`.
     fn heat_pass(&mut self) {
@@ -547,7 +547,7 @@ impl World {
                 {
                     continue;
                 }
-                // Energy decay (draft D-015).
+                // Energy decay (flagged for review (-> D-015 draft)).
                 if self.pack.category_of(id) == Category::Energy {
                     self.aux[idx] = self.aux[idx].saturating_sub(ENERGY_DECAY);
                 }
@@ -953,7 +953,7 @@ mod tests {
 
     /// Oil (density 850) floats on water (density 1000): a water cell
     /// directly above an oil cell that is blocked from falling swaps
-    /// downward, so the heavier liquid ends up below (draft D-012).
+    /// downward, so the heavier liquid ends up below (flagged for review (-> D-012 draft)).
     #[test]
     fn oil_floats_on_water() {
         let mut oil = test_packs::def(3, Category::Liquid);
